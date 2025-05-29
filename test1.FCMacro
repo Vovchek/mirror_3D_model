@@ -1,6 +1,12 @@
 import FreeCAD, Part, math
 from FreeCAD import Base
 
+# ========== Test stuff ==========
+
+def check_shape(msg, s):
+	print(f"{msg} valid: {s.isValid()}")
+	print(f"{msg} type: {s.ShapeType}")
+
 # ========== Surface and Part Parameters ==========
 c = 1/773.44    # Curvature [mm⁻¹]
 k = -1.0504     # Conic constant
@@ -78,7 +84,9 @@ ceiling = create_ceiling_sphere(R_bfs, pocket_thickness)
 # ========== Main Pocket Creation ==========
 def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6):
     prism = create_triangular_prism(edge_length, side_center, direction, height, fillet_radius=fillet_vertical)
+    check_shape("prism", prism)
     pocket = prism.cut(ceiling)
+    check_shape("pocket", pocket)
     return pocket
 
 pockets = []
@@ -91,28 +99,11 @@ angles = (0, 120, 240)  # 0°, 120°, 240°
 pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
 
 for angle in angles:
-    if isinstance(pocket, Part.Compound):
-        print("Compound before rotation")
-        if pocket.Solids:
-            pocket = pocket.Solids[0]  # Use the first solid
-        else:
-            print("Compound contains no solids!")
-        # Handle error or skip
     pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), angles[1]-angles[0])
-    if isinstance(pocket, Part.Compound):
-        print("Compound after rotation")
-        if pocket.Solids:
-            pocket = pocket.Solids[0]  # Use the first solid
-        else:
-            print("Compound contains no solids!")
-        # Handle error or skip
-    
+    check_shape("pocket after rotating", pocket)
     Part.show(pocket, f"pocket_{angle}")
     pockets.append(pocket)
 
-for pocket in pockets:
-    if not pocket.isValid() or not pocket.isSolid():
-        print(f"Pocket {i} is invalid or not a solid! Check geometry.")
 
 # ========== Subtract Pockets from Mirror ==========
 """
