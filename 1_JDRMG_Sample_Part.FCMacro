@@ -1,0 +1,247 @@
+import FreeCAD, Part, math
+from FreeCAD import Base
+
+# ========== Surface and Part Parameters ==========
+c = 1/773.44    # Curvature [mm⁻¹]
+k = -1.0504     # Conic constant
+D = 276.41      # Mirror diameter [mm]
+ZRS = 140       # Off-axis displacement [mm]
+T = 62.13       # Mirror thickness [mm]
+Tc = 50.0		# Mirror center thickness [mm]
+num_points = 500 # Increased resolution
+
+def sag(r):
+    numerator = c * r**2  # Negative for concave
+    denominator = 1 + math.sqrt(1 - (1 + k)*c**2*r**2)
+    return numerator / denominator
+
+# ========== Calculate True OAA (θ) ==========
+r1 = ZRS - D/2
+r2 = ZRS + D/2
+z1 = sag(r1)
+z2 = sag(r2)
+z0 = sag(ZRS)
+theta = math.asin((z2 - z1)/D)  # angle calculation
+
+# Build profile points (in OXZ)
+points = []
+
+for i in range(num_points+1):
+    x = r1 + i*(D/num_points)
+    z = sag(abs(x))
+    points.append(Base.Vector(x, 0, z))
+
+# Add points for the rear and base to close the profile
+# 1. From last asphere point, down lower then rear face
+points.append(Base.Vector( r2+(T+z2)*math.tan(theta), 0, -T ))   # Rear bottom right
+points.append(Base.Vector( r1, 0, -T ))  # Rear bottom left
+points.append(points[0])  # Back to start
+
+# Create the wire and face
+wire = Part.makePolygon(points)
+face = Part.Face(wire)
+
+# Test face validity
+if not face.isValid():
+    raise ValueError("Face is not valid. Check the profile points.")
+
+# Now you can revolve safely
+asphere = face.revolve(Base.Vector(0,0,0), Base.Vector(0,0,1), 360)
+
+# ========== Coordinate System Transformation ==========
+zs = z0*math.cos(theta) - ZRS*math.sin(theta)
+xs = ZRS*math.cos(theta) + z0*math.sin(theta)
+
+rotation = Base.Rotation(Base.Vector(0,1,0), math.degrees(theta))
+translation = Base.Vector(-xs, 0, -zs)
+
+mat = rotation.toMatrix()
+mat.move(translation)
+asphere = asphere.transformGeometry(mat)
+
+# ========== Lateral and Rear Surfaces Creation ==========
+cylinder = Part.makeCylinder(D/2, 2*T, FreeCAD.Vector(0, 0, -Tc))
+
+mirror_body = cylinder.common(asphere)
+
+#Part.show(mirror_body)
+
+# Outer lowering
+crown_D = 246.4      # Rear crown diameter
+crown_h = 53         # Crown height
+
+# Rear face is at z = -Tc (assuming upper face at z=0)
+base_z = -Tc     # Start of the ring at the rear
+ring_height = crown_h
+
+# Create outer cylinder (full diameter)
+outer_cyl = Part.makeCylinder(D/2, ring_height, FreeCAD.Vector(0, 0, base_z))
+# Create inner cylinder (crown diameter)
+inner_cyl = Part.makeCylinder(crown_D/2, ring_height, FreeCAD.Vector(0, 0, base_z))
+
+# The ring to remove is the difference between the two cylinders
+ring_to_remove = outer_cyl.cut(inner_cyl)
+
+# Subtract this ring from the mirror body
+mirror_hat = mirror_body.cut(ring_to_remove)
+
+# Build dodecagon (12-sided polygon) in XOY, centered at (0,0)
+n_flats = 12
+crown_flat_d = 242.41  # Distance between opposite flats
+radius = crown_flat_d / (2 * math.cos(math.pi/n_flats))  # Circumradius 
+
+points = []
+for i in range(n_flats):
+    angle = 2 * math.pi * i / n_flats
+    x = radius * math.cos(angle)
+    y = radius * math.sin(angle)
+    points.append(FreeCAD.Vector(x, y, base_z))
+
+# Close the polygon
+points.append(points[0])
+
+# Make wire and face
+wire = Part.makePolygon(points)
+face = Part.Face(wire)
+
+# Extrude the face to make the crown solid
+crown_poly = face.extrude(FreeCAD.Vector(0, 0, crown_h))
+
+# Now make the outer cylinder as before
+outer_cyl = Part.makeCylinder(D/2, crown_h, FreeCAD.Vector(0, 0, base_z))
+
+# The ring to remove is the difference between the outer cylinder and the dodecagon
+ring_to_remove = outer_cyl.cut(crown_poly)
+
+# Subtract this ring from the mirror body
+mirror_hat = mirror_hat.cut(ring_to_remove)
+
+#================================= Pockets ===============================
+
+# ========== Parameters ==========
+R_bfs = 799.5          # Best Fit Sphere radius [mm]
+pocket_thickness = 6    # Material thickness [mm]
+fillet_vertical = 6     # Vertical edge fillet radius [mm]
+fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
+safety_margin = 10      # Extra extrusion margin [mm]
+
+# ========== Create Pocket Template ==========
+
+def create_triangular_prism(edge_length, side_center, direction, height, safety_margin=10, fillet_radius=6):
+    import FreeCAD, Part, math
+    from FreeCAD import Base
+
+    # Calculate triangle vertices
+    # 1. Find endpoints of the base side
+    perp = direction.cross(Base.Vector(0,0,1))  # Perpendicular in XOY
+    perp.normalize()
+    half_side = edge_length / 2
+    p1 = side_center + perp * half_side
+    p2 = side_center - perp * half_side
+
+    # 2. Find the opposite vertex
+    # The centroid divides the median in a 2:1 ratio from vertex to side
+    # For equilateral, distance from side to opposite vertex: h = edge_length * sqrt(3)/2
+    h = edge_length * math.sqrt(3) / 2
+    p3 = side_center + direction * h
+
+    # 3. Place all points at the same Z (use safety_margin above mirror, extrude downward)
+    z0 = safety_margin
+    p1 = Base.Vector(p1.x, p1.y, z0)
+    p2 = Base.Vector(p2.x, p2.y, z0)
+    p3 = Base.Vector(p3.x, p3.y, z0)
+
+    # Create wire and face
+    wire = Part.makePolygon([p1, p2, p3, p1])
+    face = Part.Face(wire)
+
+    # Extrude downward
+    prism = face.extrude(Base.Vector(0, 0, -height))
+
+    # Fillet vertical edges
+    vertical_edges = []
+    for edge in prism.Edges:
+        v1, v2 = edge.Vertexes
+        if abs(v1.Point.x - v2.Point.x) < 1e-6 and abs(v1.Point.y - v2.Point.y) < 1e-6:
+            vertical_edges.append(edge)
+        elif abs(edge.tangentAt(0).z) > 0.99:
+            vertical_edges.append(edge)
+    if vertical_edges:
+        prism = prism.makeFillet(fillet_radius, vertical_edges)
+
+    return prism
+
+# ========== Create Spherical Ceiling ==========
+def create_ceiling_sphere(R_bfs, pocket_thickness):
+    R_ceiling = R_bfs + pocket_thickness
+    sphere = Part.makeSphere(R_ceiling, Base.Vector(0,0,R_bfs), Base.Vector(0,0,1), -90, -60, 360)
+    return sphere
+
+ceiling = create_ceiling_sphere(R_bfs, pocket_thickness)
+
+# ========== Main Pocket Creation ==========
+def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6):
+    prism = create_triangular_prism(edge_length, side_center, direction, height, fillet_radius=fillet_vertical)
+    pocket = prism.cut(ceiling)
+    if isinstance(pocket, Part.Compound):
+        if pocket.Solids:
+            pocket = pocket.Solids[0]  # Use the first solid
+        else:
+            print("Compound contains no solids!")
+            # Handle error or skip
+    return pocket
+
+pockets = []
+
+# ========== Create 3 small triangular Pockets ==========
+edge_length = 62.5      # Triangle side length [mm]
+radial_pos = 115.2      # Distance from center to nearest vertex [mm]
+angles = (0, 120, 240)  # 0°, 120°, 240°
+
+pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+
+for angle in angles:
+    pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), angles[1]-angles[0])
+    Part.show(pocket, f"pocket_{angle}")
+    #if not pocket.isValid() or not pocket.isSolid():
+    #    print(f"Pocket {i} is invalid or not a solid! Check geometry.")
+    mirror_hat.cut(pocket)
+    pockets.append(pocket)
+
+# ========== Finalize and Display ==========
+
+final_mirror = mirror_hat
+
+Part.show(final_mirror, "MirrorWithPockets")
+App.ActiveDocument.recompute()
+
+
+#================================= Section to check geometry ===============================
+
+# If mirror_body is a Compound, extract its solids
+solids = [s for s in final_mirror.Solids]
+print(f"Number of solids in compound: {len(solids)}")
+import FreeCAD, Part
+
+# Create the XOZ plane as before
+xoz_plane = Part.makePlane(1000, 1000, FreeCAD.Vector(-500, 0, -500), FreeCAD.Vector(0, 1, 0))
+
+# Section each solid in the compound
+sections = []
+for solid in solids:
+    section = solid.section(xoz_plane)
+    if not section.isNull():
+        sections.append(section)
+
+print(f"Number of non-null sections: {len(sections)}")
+
+if sections:  # Only if the list is not empty
+    from FreeCAD import Part
+    compound_section = Part.Compound(sections)
+    obj = App.ActiveDocument.addObject("Part::Feature", "section")
+    obj.Shape = compound_section
+    obj.Label = "section"
+
+
+
+App.ActiveDocument.recompute()

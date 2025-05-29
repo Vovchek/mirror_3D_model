@@ -1,0 +1,83 @@
+import FreeCAD, Part, math
+from FreeCAD import Base
+
+# ========== Corrected Parameters ==========
+c = 1/773.44    # Curvature [mm⁻¹]
+k = -1.0504     # Conic constant
+D = 276.41      # Mirror diameter [mm]
+ZRS = 140       # Off-axis displacement [mm]
+T = 62.13       # Mirror thickness [mm]
+num_points = 500 # Increased resolution
+
+# ========== Sagitta Calculation with Correct Sign ==========
+def sag(r):
+    numerator = -c * r**2  # Negative for concave surface
+    denominator = 1 + math.sqrt(1 - (1 + k)*c**2*r**2)
+    return numerator / denominator
+
+# ========== Calculate True OAA (θ) ==========
+r1 = ZRS + D/2
+r2 = ZRS - D/2
+z1 = sag(r1)
+z2 = sag(r2)
+theta = math.asin((z2 - z1)/D)  # Corrected angle calculation
+
+print(f"Calculated OAA: {math.degrees(theta):.1f}°")
+
+# ========== Aspheric Profile Generation ==========
+def aspheric_profile():
+    points = []
+    for x in [-D/2 + i*(D/num_points) for i in range(num_points+1)]:
+        r = abs(x)
+        z = sag(r)
+        points.append(Base.Vector(x, 0, z))
+    return points
+
+# Create wire and face with B-spline interpolation
+wire = Part.BSplineCurve()
+wire.interpolate(aspheric_profile())
+face = Part.Face(Part.Wire(wire.toShape()))
+
+# ========== Surface Revolution with Validation ==========
+def create_revolved_surface(face):
+    try:
+        # Method 1: Standard revolution
+        return face.revolve(Base.Vector(0,0,0), Base.Vector(0,1,0), 360)
+    except Part.OCCError:
+        # Method 2: Alternative axis specification
+        # axis_edge = Part.makeLine(Base.Vector(0,-1000,0), Base.Vector(0,1000,0))
+        # return face.revolve(axis_edge, 360)
+    # except:
+        # Method 3: Manual surface reconstruction
+        edges = face.OuterWire.Edges
+        return Part.makeLoft([edges[0].copy(), edges[-1].copy()]).revolve(Base.Vector(0,0,0), Base.Vector(0,1,0), 360)
+
+asphere = create_revolved_surface(face)
+
+# ========== Coordinate System Transformation ==========
+rotation = Base.Rotation(Base.Vector(0,1,0), math.degrees(theta))
+translation = Base.Vector(ZRS*math.cos(theta), 0, ZRS*math.sin(theta))
+
+mat = rotation.toMatrix()
+mat.move(translation)
+asphere = asphere.transformGeometry(mat)
+
+# ========== Lateral Surface Creation ==========
+cylinder_dir = Base.Vector(math.cos(theta), 0, math.sin(theta))
+cylinder = Part.makeCylinder(D/2, T, translation, cylinder_dir)
+mirror_body = cylinder.common(asphere)
+
+# ========== Rear Surface Closure ==========
+rear_plane = Part.makePlane(D, D, 
+                           translation + cylinder_dir*T,
+                           cylinder_dir).extrude(-cylinder_dir*T)
+complete_mirror = mirror_body.fuse(rear_plane)
+
+# ========== Final Checks ==========
+# Verify critical dimensions
+vol = complete_mirror.Volume
+assert abs(vol - math.pi*(D/2)**2*T) < 1, "Volume deviation exceeds tolerance"
+
+# ========== Display ==========
+Part.show(complete_mirror)
+App.ActiveDocument.recompute()

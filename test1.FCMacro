@@ -1,0 +1,126 @@
+import FreeCAD, Part, math
+from FreeCAD import Base
+
+# ========== Surface and Part Parameters ==========
+c = 1/773.44    # Curvature [mm⁻¹]
+k = -1.0504     # Conic constant
+D = 276.41      # Mirror diameter [mm]
+ZRS = 140       # Off-axis displacement [mm]
+T = 62.13       # Mirror thickness [mm]
+Tc = 50.0		# Mirror center thickness [mm]
+num_points = 500 # Increased resolution
+
+
+#================================= Pockets ===============================
+
+
+# ========== Parameters ==========
+R_bfs = 799.5          # Best Fit Sphere radius [mm]
+pocket_thickness = 6    # Material thickness [mm]
+fillet_vertical = 6     # Vertical edge fillet radius [mm]
+fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
+safety_margin = 10      # Extra extrusion margin [mm]
+
+# ========== Create Pocket Template ==========
+
+def create_triangular_prism(edge_length, side_center, direction, height, safety_margin=10, fillet_radius=6):
+    import FreeCAD, Part, math
+    from FreeCAD import Base
+
+    # Calculate triangle vertices
+    # 1. Find endpoints of the base side
+    perp = direction.cross(Base.Vector(0,0,1))  # Perpendicular in XOY
+    perp.normalize()
+    half_side = edge_length / 2
+    p1 = side_center + perp * half_side
+    p2 = side_center - perp * half_side
+
+    # 2. Find the opposite vertex
+    # The centroid divides the median in a 2:1 ratio from vertex to side
+    # For equilateral, distance from side to opposite vertex: h = edge_length * sqrt(3)/2
+    h = edge_length * math.sqrt(3) / 2
+    p3 = side_center + direction * h
+
+    # 3. Place all points at the same Z (use safety_margin above mirror, extrude downward)
+    z0 = safety_margin
+    p1 = Base.Vector(p1.x, p1.y, z0)
+    p2 = Base.Vector(p2.x, p2.y, z0)
+    p3 = Base.Vector(p3.x, p3.y, z0)
+
+    # Create wire and face
+    wire = Part.makePolygon([p1, p2, p3, p1])
+    face = Part.Face(wire)
+
+    # Extrude downward
+    prism = face.extrude(Base.Vector(0, 0, -height))
+
+    # Fillet vertical edges
+    vertical_edges = []
+    for edge in prism.Edges:
+        v1, v2 = edge.Vertexes
+        if abs(v1.Point.x - v2.Point.x) < 1e-6 and abs(v1.Point.y - v2.Point.y) < 1e-6:
+            vertical_edges.append(edge)
+        elif abs(edge.tangentAt(0).z) > 0.99:
+            vertical_edges.append(edge)
+    if vertical_edges:
+        prism = prism.makeFillet(fillet_radius, vertical_edges)
+
+    return prism
+
+# ========== Create Spherical Ceiling ==========
+def create_ceiling_sphere(R_bfs, pocket_thickness):
+    R_ceiling = R_bfs + pocket_thickness
+    sphere = Part.makeSphere(R_ceiling, Base.Vector(0,0,R_bfs), Base.Vector(0,0,1), -90, -60, 360)
+    return sphere
+
+ceiling = create_ceiling_sphere(R_bfs, pocket_thickness)
+
+# ========== Main Pocket Creation ==========
+def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6):
+    prism = create_triangular_prism(edge_length, side_center, direction, height, fillet_radius=fillet_vertical)
+    pocket = prism.cut(ceiling)
+    return pocket
+
+pockets = []
+
+# ========== Create 3 small triangular Pockets ==========
+edge_length = 62.5      # Triangle side length [mm]
+radial_pos = 115.2      # Distance from center to nearest vertex [mm]
+angles = (0, 120, 240)  # 0°, 120°, 240°
+
+pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+
+for angle in angles:
+    if isinstance(pocket, Part.Compound):
+        print("Compound before rotation")
+        if pocket.Solids:
+            pocket = pocket.Solids[0]  # Use the first solid
+        else:
+            print("Compound contains no solids!")
+        # Handle error or skip
+    pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), angles[1]-angles[0])
+    if isinstance(pocket, Part.Compound):
+        print("Compound after rotation")
+        if pocket.Solids:
+            pocket = pocket.Solids[0]  # Use the first solid
+        else:
+            print("Compound contains no solids!")
+        # Handle error or skip
+    
+    Part.show(pocket, f"pocket_{angle}")
+    pockets.append(pocket)
+
+for pocket in pockets:
+    if not pocket.isValid() or not pocket.isSolid():
+        print(f"Pocket {i} is invalid or not a solid! Check geometry.")
+
+# ========== Subtract Pockets from Mirror ==========
+"""
+final_mirror = mirror_hat  # Your existing mirror body
+for pocket in pockets:
+    final_mirror = final_mirror.cut(pocket)
+
+# ========== Finalize and Display ==========
+"""
+
+App.ActiveDocument.recompute()
