@@ -92,7 +92,7 @@ radius = crown_flat_d / (2 * math.cos(math.pi/n_flats))  # Circumradius
 
 points = []
 for i in range(n_flats):
-    angle = 2 * math.pi * i / n_flats
+    angle = 2 * math.pi * (i + 0.5) / n_flats
     x = radius * math.cos(angle)
     y = radius * math.sin(angle)
     points.append(FreeCAD.Vector(x, y, base_z))
@@ -191,7 +191,7 @@ def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_v
             # Handle error or skip
     return pocket
 
-pockets = []
+final_mirror = mirror_hat
 
 # ========== Create 3 small triangular Pockets ==========
 edge_length = 62.5      # Triangle side length [mm]
@@ -199,18 +199,55 @@ radial_pos = 115.2      # Distance from center to nearest vertex [mm]
 angles = (0, 120, 240)  # 0°, 120°, 240°
 
 pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+final_mirror = final_mirror.cut(pocket)
 
-for angle in angles:
-    pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), angles[1]-angles[0])
-    Part.show(pocket, f"pocket_{angle}")
-    #if not pocket.isValid() or not pocket.isSolid():
-    #    print(f"Pocket {i} is invalid or not a solid! Check geometry.")
-    mirror_hat.cut(pocket)
-    pockets.append(pocket)
+pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+final_mirror = final_mirror.cut(pocket)
+
+pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+final_mirror = final_mirror.cut(pocket)
+
+# ========== Create 3 bigger triangular Pockets ==========
+edge_length = 85      # Triangle side length [mm]
+radial_pos = -30.5      # Distance from center to nearest vertex [mm]
+angles = (0, 120, 240)  # 0°, 120°, 240°
+
+pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+final_mirror = final_mirror.cut(pocket)
+
+pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+final_mirror = final_mirror.cut(pocket)
+
+pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+final_mirror = final_mirror.cut(pocket)
+
+# ========== Create 1 center triangular Pocket ==========
+radial_pos = -24.5      # Distance from center to nearest vertex [mm]
+pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(1, 0, 0), Tc+2*safety_margin, ceiling)
+final_mirror = final_mirror.cut(pocket)
+
+# ========== Mounting holes ================
+hole_diameter = 15
+hole_position_x = 55
+
+# Create cylindrical pocket (extruded circle)
+# Place pocket top at safety margin above mirror surface (Z= safety_margin)
+pocket_top_z = safety_margin
+depth = Tc + 2 * safety_margin
+pocket_base_z = pocket_top_z - depth
+
+hole = Part.makeCylinder(hole_diameter/2.0, depth, Base.Vector(hole_position_x, 0, pocket_base_z))
+hole.cut(ceiling)
+
+final_mirror = final_mirror.cut(hole)
+
+hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+final_mirror = final_mirror.cut(hole)
+
+hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+final_mirror = final_mirror.cut(hole)
 
 # ========== Finalize and Display ==========
-
-final_mirror = mirror_hat
 
 Part.show(final_mirror, "MirrorWithPockets")
 App.ActiveDocument.recompute()
