@@ -1,6 +1,11 @@
 import FreeCAD, Part, math
 from FreeCAD import Base
 
+show_features = True # show all cut-off features - crown, pockets, notches, etc
+slice_dirZ = FreeCAD.Vector(0, 1, 0) 
+slice_size = 1000
+slice_position = FreeCAD.Vector(-slice_size/2.0, 0, -slice_size/2.0)
+
 # ========== Surface and Part Parameters ==========
 c = 1/773.44    # Curvature [mm⁻¹]
 k = -1.0504     # Conic constant
@@ -9,6 +14,27 @@ ZRS = 140       # Off-axis displacement [mm]
 T = 62.13       # Mirror thickness [mm]
 Tc = 50.0		# Mirror center thickness [mm]
 num_points = 500 # Increased resolution
+R_bfs = 799.5   # Best Fit Sphere radius [mm]
+
+# Outer lowering
+crown_D = 246.4      # Rear crown diameter
+crown_h = 53         # Crown height
+
+# ========== Pockets' Parameters ==========
+pocket_thickness = 6    # Material thickness [mm]
+fillet_vertical = 6     # Vertical edge fillet radius [mm]
+fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
+safety_margin = 10      # Extra extrusion margin [mm]
+
+
+# lateral througt holes
+D_lat_hole = 7
+T_wall = 6 + 4 # +4 to make sure drill through
+H_lat_hole = -Tc + 36.73
+lat_hole_angles = [150, 60, 300]
+lat_hole_shifts = [FreeCAD.Vector(6, 10.39, 0),
+                   FreeCAD.Vector(10.39, -6, 0),
+                   FreeCAD.Vector(-10.39, -6, 0)]
 
 def sag(r):
     numerator = c * r**2  # Negative for concave
@@ -80,12 +106,8 @@ asphere = asphere.transformGeometry(mat)
 cylinder = Part.makeCylinder(D/2, 2*T, FreeCAD.Vector(0, 0, -Tc))
 
 mirror_body = cylinder.common(asphere)
-
-#Part.show(mirror_body)
-
-# Outer lowering
-crown_D = 246.4      # Rear crown diameter
-crown_h = 53         # Crown height
+if show_features:
+    Part.show(mirror_body, "blank")
 
 # Rear face is at z = -Tc (assuming upper face at z=0)
 base_z = -Tc     # Start of the ring at the rear
@@ -140,13 +162,16 @@ tri_base = [p0, p1, p2, p0]
 tri_wire = Part.makePolygon(tri_base)
 tri_face = Part.Face(tri_wire)
 notch_prism = tri_face.extrude(Base.Vector(0, 0, notch_height))
-Part.show(notch_prism, "notch")
+if show_features:
+    Part.show(notch_prism, "upper_notch")
 
 # Subtract notch from crown_poly (or mirror_hat, as needed)
 crown_poly = crown_poly.cut(notch_prism)
 
 # Oposite notch
 notch_prism = mirror_shape_about_plane(notch_prism, 90)
+if show_features:
+    Part.show(notch_prism, "vertex_notch")
 crown_poly = crown_poly.cut(notch_prism)
 
 # Now make the outer cylinder as before
@@ -154,18 +179,14 @@ outer_cyl = Part.makeCylinder(D/2, crown_h, FreeCAD.Vector(0, 0, base_z))
 
 # The ring to remove is the difference between the outer cylinder and the dodecagon
 ring_to_remove = outer_cyl.cut(crown_poly)
+if show_features:
+    Part.show(ring_to_remove, "crown")
 
 # Subtract this ring from the mirror body
 mirror_hat = mirror_hat.cut(ring_to_remove)
 
 #================================= Pockets ===============================
 
-# ========== Parameters ==========
-R_bfs = 799.5          # Best Fit Sphere radius [mm]
-pocket_thickness = 6    # Material thickness [mm]
-fillet_vertical = 6     # Vertical edge fillet radius [mm]
-fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
-safety_margin = 10      # Extra extrusion margin [mm]
 
 # ========== Create Pocket Template ==========
 
@@ -296,12 +317,18 @@ radial_pos = 115.2      # Distance from center to nearest vertex [mm]
 angles = (0, 120, 240)  # 0°, 120°, 240°
 
 pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+if show_features:
+	Part.show(pocket, "small_3a_pocket_0")
 final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+	Part.show(pocket, "small_3a_pocket_120")
 final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+	Part.show(pocket, "small_3a_pocket_240")
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Create 3 bigger triangular Pockets ==========
@@ -310,17 +337,25 @@ radial_pos = -30.5      # Distance from center to nearest vertex [mm]
 angles = (0, 120, 240)  # 0°, 120°, 240°
 
 pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+if show_features:
+	Part.show(pocket, "big_3a_pocket_0")
 final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+	Part.show(pocket, "big_3a_pocket_120")
 final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+	Part.show(pocket, "big_3a_pocket_240")
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Create 1 center triangular Pocket ==========
 radial_pos = -24.5      # Distance from center to nearest vertex [mm]
 pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(1, 0, 0), Tc+2*safety_margin, ceiling)
+if show_features:
+	Part.show(pocket, "big_3a_pocket_center")
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Create Polygonal Pockets ==========
@@ -336,27 +371,33 @@ height = Tc + 2*safety_margin  # Use your mirror thickness and margin
 # Assume 'ceiling' is already defined (e.g., a sphere as before)
 
 pocket = create_polygonal_pocket(polygon_points, height, ceiling)
-#Part.show(pocket, "poly_1")
+if show_features:
+    Part.show(pocket, "poly_pocket_1")
 final_mirror = final_mirror.cut(pocket)
 
 pocket = mirror_shape_about_plane(pocket, 0)
-#Part.show(pocket, "poly_2")
+if show_features:
+    Part.show(pocket, "poly_pocket_2")
 final_mirror = final_mirror.cut(pocket)
 
 pocket = mirror_shape_about_plane(pocket, -60)
-#Part.show(pocket, "poly_3")
+if show_features:
+    Part.show(pocket, "poly_pocket_3")
 final_mirror = final_mirror.cut(pocket)
 
 pocket = mirror_shape_about_plane(pocket, 60)
-#Part.show(pocket, "poly_4")
+if show_features:
+    Part.show(pocket, "poly_pocket_4")
 final_mirror = final_mirror.cut(pocket)
 
 pocket = mirror_shape_about_plane(pocket, 0)
-#Part.show(pocket, "poly_5")
+if show_features:
+    Part.show(pocket, "poly_pocket_5")
 final_mirror = final_mirror.cut(pocket)
 
 pocket = mirror_shape_about_plane(pocket, -60)
-#Part.show(pocket, "poly_6")
+if show_features:
+    Part.show(pocket, "poly_pocket_6")
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Mounting holes ================
@@ -372,41 +413,56 @@ pocket_base_z = pocket_top_z - depth
 hole = Part.makeCylinder(hole_diameter/2.0, depth, Base.Vector(hole_position_x, 0, pocket_base_z))
 hole = hole.cut(ceiling)
 
+if show_features:
+    Part.show(hole, "hole_0")
 final_mirror = final_mirror.cut(hole)
 
 hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+    Part.show(hole, "hole_120")
 final_mirror = final_mirror.cut(hole)
 
 hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+    Part.show(hole, "hole_240")
 final_mirror = final_mirror.cut(hole)
+
+# ========== Drill lateral holes ===========
+for i in range(3):
+    hole = Part.makeCylinder(D_lat_hole/2.0, T_wall, Base.Vector(crown_D/2.0 + 1, 0, H_lat_hole), Base.Vector(-1, 0, 0))
+    hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), lat_hole_angles[i])
+    hole.translate(lat_hole_shifts[i])
+    if show_features:
+        Part.show(hole, f"lat_hole_{lat_hole_angles[i]}")
+    final_mirror = final_mirror.cut(hole)
 
 # ========== Finalize and Display ==========
 
 Part.show(final_mirror, "MirrorWithPockets")
-App.ActiveDocument.recompute()
 
 #================================= Section to check geometry ===============================
-
-# If mirror_body is a Compound, extract its solids
-solids = [s for s in final_mirror.Solids]
-print(f"Number of solids in compound: {len(solids)}")
-import FreeCAD, Part
+def create_section(body, slice_size, slice_position, slice_dirZ):
+    if slice_size <= 0:
+	    return None
+    # If mirror_body is a Compound, extract its solids
+    solids = [s for s in body.Solids]
 
 # Create the XOZ plane as before
-xoz_plane = Part.makePlane(1000, 1000, FreeCAD.Vector(-500, 0, -500), FreeCAD.Vector(0, 1, 0))
+    slice_plane = Part.makePlane(slice_size, slice_size, slice_position, slice_dirZ)
 
 # Section each solid in the compound
-sections = []
-for solid in solids:
-    section = solid.section(xoz_plane)
-    if not section.isNull():
-        sections.append(section)
+    sections = []
+    for solid in solids:
+        section = solid.section(slice_plane)
+        if not section.isNull():
+            sections.append(section)
 
-print(f"Number of non-null sections: {len(sections)}")
-
-if sections:  # Only if the list is not empty
-    compound_section = Part.Compound(sections)
-    Part.show(compound_section, "section")
-
+    if sections:  # Only if the list is not empty
+        compound_section = Part.Compound(sections)
+        return compound_section
+    
+section = create_section(final_mirror, slice_size, slice_position, slice_dirZ)
+if not (section is None):
+    Part.show(section, "section")
 
 App.ActiveDocument.recompute()

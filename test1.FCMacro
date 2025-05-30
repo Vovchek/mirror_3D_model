@@ -18,6 +18,19 @@ num_points = 500 # Increased resolution
 
 
 #================================= Pockets ===============================
+# Outer lowering
+crown_D = 246.4      # Rear crown diameter
+crown_h = 53         # Crown height
+
+# lateral througt holes
+D_lat_hole = 7
+T_wall = 6 + 4 # +4 to make sure drill through
+H_lat_hole = -Tc + 36.73
+lat_hole_angles = [150, 60, 300]
+lat_hole_shifts = [FreeCAD.Vector(6, 10.39, 0),
+                   FreeCAD.Vector(10.39, -6, 0),
+                   FreeCAD.Vector(-10.39, -6, 0)]
+
 
 
 # ========== Parameters ==========
@@ -287,8 +300,54 @@ hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 final_mirror = final_mirror.cut(hole)
 Part.show(hole, f"hole_240")
 
+# ========== Drill lateral holes ===========
+lat_hole = Part.makeCylinder(D_lat_hole/2.0, T_wall, Base.Vector(crown_D/2.0 + 1, 0, H_lat_hole), Base.Vector(-1, 0, 0))
+#Part.show(lat_hole, f"initial_hole")
+
+for i in range(3):
+    hole = Part.makeCylinder(D_lat_hole/2.0, T_wall, Base.Vector(crown_D/2.0 + 1, 0, H_lat_hole), Base.Vector(-1, 0, 0))
+    hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), lat_hole_angles[i])
+    hole.translate(lat_hole_shifts[i])
+    Part.show(hole, f"lat_hole_{lat_hole_angles[i]}")
+    final_mirror = final_mirror.cut(hole)
+
+
 
 # ========== Finalize and Display ==========
-Part.show(final_mirror, "MirrorWithPockets")
+#Part.show(final_mirror, "MirrorWithPockets")
+
+
+#================================= Section to check geometry ===============================
+def create_section(body, slice_size, slice_position, slice_dirZ):
+    if slice_size <= 0:
+	    print("zero slice size")
+	    return None
+    # If mirror_body is a Compound, extract its solids
+    solids = [s for s in body.Solids]
+
+# Create the XOZ plane as before
+    slice_plane = Part.makePlane(slice_size, slice_size, slice_position, slice_dirZ)
+
+# Section each solid in the compound
+    sections = []
+    for solid in solids:
+        section = solid.section(slice_plane)
+        if not section.isNull():
+            sections.append(section)
+
+    if sections:  # Only if the list is not empty
+        compound_section = Part.Compound(sections)
+        print("section created")
+        return compound_section
+    print("no solids found")
+
+slice_dirZ = FreeCAD.Vector(0, 1, 0) 
+slice_size = 1000
+slice_position = FreeCAD.Vector(-slice_size/2.0, 0, -slice_size/2.0)
+    
+section = create_section(final_mirror, slice_size, slice_position, slice_dirZ)
+if not (section is None):
+    Part.show(section, "section")
+
 
 App.ActiveDocument.recompute()
