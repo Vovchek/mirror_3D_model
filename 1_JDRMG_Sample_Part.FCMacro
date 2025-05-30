@@ -10,15 +10,32 @@ slice_position = FreeCAD.Vector(-slice_size/2.0, 0, -slice_size/2.0)
 c = 1/773.44    # Curvature [mm⁻¹]
 k = -1.0504     # Conic constant
 D = 276.41      # Mirror diameter [mm]
-ZRS = 140       # Off-axis displacement [mm]
+ZR = 140.0      # ZR in Optical Reference Frame (ORF)
+ZRC = 142.0
 T = 62.13       # Mirror thickness [mm]
 Tc = 50.0		# Mirror center thickness [mm]
 num_points = 500 # Increased resolution
 R_bfs = 799.5   # Best Fit Sphere radius [mm]
 
+def sag(r):
+    numerator = c * r**2  # Negative for concave
+    denominator = 1 + math.sqrt(1 - (1 + k)*c**2*r**2)
+    return numerator / denominator
+
+# ========== Calculate True OAA (θ) ==========
+DX = 272 # picked-up value
+r1 = ZR - DX/2
+r2 = ZR + DX/2
+z1 = sag(r1)
+z2 = sag(r2)
+z0 = sag(ZRC)
+theta = math.atan((z2 - z1)/DX)  # angle calculation
+
 # Outer lowering
 crown_D = 246.4      # Rear crown diameter
 crown_h = 53         # Crown height
+n_flats = 12
+crown_flat_d = 242.41  # Distance between opposite flats
 
 # ========== Pockets' Parameters ==========
 pocket_thickness = 6    # Material thickness [mm]
@@ -36,11 +53,6 @@ lat_hole_shifts = [FreeCAD.Vector(6, 10.39, 0),
                    FreeCAD.Vector(10.39, -6, 0),
                    FreeCAD.Vector(-10.39, -6, 0)]
 
-def sag(r):
-    numerator = c * r**2  # Negative for concave
-    denominator = 1 + math.sqrt(1 - (1 + k)*c**2*r**2)
-    return numerator / denominator
-
 def mirror_shape_about_plane(shape, angle_deg, plane_point=Base.Vector(0,0,0)):
     """
     Mirrors a shape about a plane containing the OZ axis and making angle_deg with OX axis.
@@ -57,14 +69,6 @@ def mirror_shape_about_plane(shape, angle_deg, plane_point=Base.Vector(0,0,0)):
     # Mirror the shape
     mirrored = shape.mirror(plane_point, normal)
     return mirrored
-
-# ========== Calculate True OAA (θ) ==========
-r1 = ZRS - D/2
-r2 = ZRS + D/2
-z1 = sag(r1)
-z2 = sag(r2)
-z0 = sag(ZRS)
-theta = math.asin((z2 - z1)/D)  # angle calculation
 
 # Build profile points (in OXZ)
 points = []
@@ -92,11 +96,13 @@ if not face.isValid():
 asphere = face.revolve(Base.Vector(0,0,0), Base.Vector(0,0,1), 360)
 
 # ========== Coordinate System Transformation ==========
-zs = z0*math.cos(theta) - ZRS*math.sin(theta)
-xs = ZRS*math.cos(theta) + z0*math.sin(theta)
+z0s = z0*math.cos(theta) - ZRC*math.sin(theta)
+x0s = ZRC*math.cos(theta) + z0*math.sin(theta)
+
+print(f"z1s: {z1*math.cos(theta) - r1*math.sin(theta)} z2s: {z2*math.cos(theta) - r2*math.sin(theta)}")
 
 rotation = Base.Rotation(Base.Vector(0,1,0), math.degrees(theta))
-translation = Base.Vector(-xs, 0, -zs)
+translation = Base.Vector(-x0s, 0, -z0s)
 
 mat = rotation.toMatrix()
 mat.move(translation)
@@ -125,8 +131,6 @@ ring_to_remove = outer_cyl.cut(inner_cyl)
 mirror_hat = mirror_body.cut(ring_to_remove)
 
 # Build dodecagon (12-sided polygon) in XOY, centered at (0,0)
-n_flats = 12
-crown_flat_d = 242.41  # Distance between opposite flats
 radius = crown_flat_d / (2 * math.cos(math.pi/n_flats))  # Circumradius 
 
 points = []
@@ -429,7 +433,7 @@ final_mirror = final_mirror.cut(hole)
 
 # ========== Drill lateral holes ===========
 for i in range(3):
-    hole = Part.makeCylinder(D_lat_hole/2.0, T_wall, Base.Vector(crown_D/2.0 + 1, 0, H_lat_hole), Base.Vector(-1, 0, 0))
+    hole = Part.makeCylinder(D_lat_hole/2.0, T_wall, Base.Vector(crown_flat_d/2.0 + 1, 0, H_lat_hole), Base.Vector(-1, 0, 0))
     hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), lat_hole_angles[i])
     hole.translate(lat_hole_shifts[i])
     if show_features:
