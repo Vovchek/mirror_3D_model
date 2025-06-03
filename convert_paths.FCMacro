@@ -1,16 +1,8 @@
 import FreeCAD, FreeCADGui, Part
-import ImportSVG  # FreeCAD's built-in SVG parser
 import numpy as np
 from scipy import optimize
 import math
-
-def is_svg_path(obj):
-    """Check if object is an SVG import"""
-    return hasattr(obj, "PathData") or ("SVG" in obj.TypeId)
-
-def convert_svg_to_shape(obj):
-    """Convert SVG path data to FreeCAD edges"""
-    return ImportSVG.read(obj.PathData)  # Returns a Compound shape
+import time  # For performance measurement
 
 def fit_circle(points):
     """Fit circle to points using LSM and return center, radius"""
@@ -31,97 +23,137 @@ def fit_circle(points):
     R = calc_R(xc, yc).mean()
     return FreeCAD.Vector(xc, yc, 0), R
 
-def angular_span(points, center):
-    """Calculate angular span of points around center (in radians)"""
-    angles = []
-    for p in points:
-        v = p - center
-        angles.append(math.atan2(v.y, v.x))
-    angles.sort()
-    spans = []
-    for i in range(len(angles)):
-        start = angles[i]
-        end = angles[(i+1) % len(angles)]
-        span = end - start if end > start else end - start + 2*math.pi
-        spans.append(span)
-    return max(spans)
+def is_convertible_path(obj):
+    """Check if object can be converted to circle/arc"""
+    if hasattr(obj, "PathData") or ("SVG" in obj.TypeId):
+        return True
+    if hasattr(obj, 'Shape') and obj.Shape:
+        return obj.Shape.ShapeType in ["Wire", "Edge", "Compound"]
+    return False
 
-def process_svg_object(svg_obj):
-    """Convert SVG and return replacement circle/arc"""
-    color = svg_obj.ViewObject.LineColor
-    width = svg_obj.ViewObject.LineWidth
-    
-    # Convert SVG to edges
-    shape = convert_svg_to_shape(svg_obj)
-    if not shape.Edges:
-        return None
-    
-    # Create temporary object for point extraction
-    temp_obj = FreeCAD.ActiveDocument.addObject("Part::Feature", "temp")
-    temp_obj.Shape = shape
+def get_path_points(obj):
+    """Extract points from various path types"""
     points = []
-    for edge in temp_obj.Shape.Edges:
-        points.extend(edge.discretize(Number=100))
+    if hasattr(obj, "PathData"):
+        try:
+            shape = Part.Shape()
+            shape.importSVG(obj.PathData)
+            for edge in shape.Edges:
+                points.extend(edge.discretize(Number=20))
+        except:
+            print("Failed to convert SVG path")
+    elif hasattr(obj, 'Shape') and obj.Shape:
+        shape = obj.Shape
+        if shape.ShapeType == "Wire":
+            for edge in shape.Edges:
+                points.extend(edge.discretize(Number=20))
+        elif shape.ShapeType == "Edge":
+            points.extend(shape.discretize(Number=20))
+        elif shape.ShapeType == "Compound":
+            for sub_shape in shape.SubShapes:
+                if sub_shape.ShapeType == "Edge":
+                    points.extend(sub_shape.discretize(Number=20))
+                elif sub_shape.ShapeType == "Wire":
+                    for edge in sub_shape.Edges:
+                        points.extend(edge.discretize(Number=20))
+    return points
+
+def is_closed_curve(points, center, radius, threshold=0.05):
+    """Fast circle detection using critical points"""
+    # Quick endpoint check
+    if points[0].distanceToPoint(points[-1]) > radius * threshold:
+        return False
     
-    # Fit circle/arc (using your original logic)
-    # ... [INSERT CIRCLE/ARC FITTING CODE] ...
-    # Convert points to numpy array
-    pts_array = np.array([(p.x, p.y) for p in points])
+    # Check critical points
+    critical_points = [
+        points[0],
+        points[len(points)//2],
+        points[-1]
+    ]
     
-    # Fit circle using LSM
-    center, radius = fit_circle(pts_array)
+    critical_dists = [p.distanceToPoint(center) for p in critical_points]
+    max_dev = max(abs(dist - radius) for dist in critical_dists)
     
-    # Determine if circle or arc
-    first_last_dist = points[0].distanceToPoint(points[-1])
-    avg_dist = sum(p.distanceToPoint(center) for p in points) / len(points)
-    is_circle = first_last_dist < (avg_dist * 0.1)  # 10% threshold
-    
-    if is_circle:
-        # Create circle shape
-        circle = Part.Circle()
-        circle.Center = center
-        circle.Radius = radius
-        shape = circle.toShape()
-    else:
-        # Calculate arc angles
-        start_angle = math.atan2(points[0].y - center.y, points[0].x - center.x)
-        end_angle = math.atan2(points[-1].y - center.y, points[-1].x - center.x)
-        
-        # Adjust direction using mid-point
-        mid_idx = len(points) // 2
-        mid_angle = math.atan2(points[mid_idx].y - center.y, points[mid_idx].x - center.x)
-        
-        # Reverse if needed (handles clockwise arcs)
-        if start_angle > end_angle:
-            start_angle, end_angle = end_angle, start_angle
-            if not (start_angle <= mid_angle <= end_angle):
-                end_angle += 2 * math.pi
-        
-        # Create arc shape
-        circle = Part.Circle()
-        circle.Center = center
-        circle.Radius = radius
-        arc = Part.ArcOfCircle(circle, start_angle, end_angle)
-        shape = arc.toShape()
-    
-    # Create final object
-    new_obj = doc.addObject("Part::Feature", "Circle" if is_circle else "Arc")
-    new_obj.Shape = shape    
-    
-    # Cleanup and return
-    FreeCAD.ActiveDocument.removeObject(temp_obj.Name)
-    return new_obj
+    return max_dev < radius * threshold
 
 def path_to_circle_or_arc():
     doc = FreeCAD.ActiveDocument
+    if not doc: return
+    
     for obj in FreeCADGui.Selection.getSelection():
-        if is_svg_path(obj):
-            new_obj = process_svg_object(obj)
-            if new_obj:
-                # Preserve visual properties
-                new_obj.ViewObject.LineColor = obj.ViewObject.LineColor
-                new_obj.ViewObject.LineWidth = obj.ViewObject.LineWidth
-                # Hide original SVG
-                obj.ViewObject.Visibility = False
-                
+        start_time = time.time()
+        print(f"\nProcessing: {obj.Label} ({obj.TypeId})")
+        
+        if not is_convertible_path(obj):
+            print("Skipping non-convertible object")
+            continue
+            
+        points = get_path_points(obj)
+        if len(points) < 10:
+            print(f"Only {len(points)} points - skipping")
+            continue
+            
+        # Convert to numpy array
+        pts_array = np.array([(p.x, p.y) for p in points])
+        
+        # Fit circle
+        try:
+            fit_start = time.time()
+            center, radius = fit_circle(pts_array)
+            print(f"Circle fit: {time.time()-fit_start:.2f}s")
+        except Exception as e:
+            print(f"Fitting failed: {str(e)}")
+            continue
+        
+        # FAST circle detection
+        detect_start = time.time()
+        is_circle = is_closed_curve(points, center, radius)
+        print(f"Circle detection: {time.time()-detect_start:.4f}s")
+        
+        if is_circle:
+            # Create circle
+            circle = Part.Circle()
+            circle.Center = center
+            circle.Radius = radius
+            shape = circle.toShape()
+            obj_name = "Circle"
+        else:
+            # Create arc
+            start_angle = math.atan2(points[0].y - center.y, points[0].x - center.x)
+            end_angle = math.atan2(points[-1].y - center.y, points[-1].x - center.x)
+            
+            circle = Part.Circle()
+            circle.Center = center
+            circle.Radius = radius
+            arc = Part.ArcOfCircle(circle, start_angle, end_angle)
+            shape = arc.toShape()
+            obj_name = "Arc"
+        
+        # Create object
+        new_obj = doc.addObject("Part::Feature", obj_name)
+        new_obj.Shape = shape
+        
+        # IMPROVE DISPLAY QUALITY
+        if is_circle:
+            # Smoother circle display
+            new_obj.ViewObject.AngularDeflection = 0.1  # Finer resolution
+            new_obj.ViewObject.Deviation = 0.01  # Smaller tolerance
+        else:
+            # Good enough for arcs
+            new_obj.ViewObject.AngularDeflection = 1.0
+        
+        # Preserve appearance
+        if hasattr(obj, 'ViewObject'):
+            new_obj.ViewObject.LineColor = obj.ViewObject.LineColor
+            new_obj.ViewObject.LineWidth = obj.ViewObject.LineWidth
+            new_obj.ViewObject.AngularDeflection = 0.1  # Default=0.4
+            new_obj.ViewObject.Deviation = 0.01         # Default=0.5
+            obj.ViewObject.Visibility = False
+        
+        print(f"Created {obj_name} in {time.time()-start_time:.2f}s")
+    
+    print("Processing complete")
+    doc.recompute()
+
+# Run the script
 path_to_circle_or_arc()
