@@ -1,0 +1,98 @@
+import FreeCAD, FreeCADGui, Part
+import math
+
+def calculate_intersection(edge1, edge2):
+    """Calculate intersection point of two infinite lines"""
+    line1 = edge1.Curve
+    line2 = edge2.Curve
+    
+    # Get direction vectors
+    dir1 = line1.Direction
+    dir2 = line2.Direction
+    
+    # Check for parallel lines
+    if dir1.cross(dir2).Length < 1e-7:
+        return None
+    
+    # Calculate intersection
+    intersection = line1.intersect(line2)[0]
+    return intersection
+
+def create_aux_segment(edge, intersection, color=(1.0, 0.0, 0.0)):
+    """Create auxiliary segments from endpoints to intersection"""
+    doc = FreeCAD.ActiveDocument
+    segments = []
+    line1 = Part.makeLine(edge.firstVertex().Point, (intersection.X, intersection.Y, intersection.Z))
+    line2 = Part.makeLine(edge.lastVertex().Point, (intersection.X, intersection.Y, intersection.Z))
+    if line1.Length >= line2.Length:
+        line = line1
+    else:
+        line = line2
+    line_obj = doc.addObject("Part::Feature", "AuxSegment")
+    line_obj.Shape = line
+    
+    # Apply red color
+    line_obj.ViewObject.LineColor = color
+    line_obj.ViewObject.LineWidth = 2.0
+    
+    return line_obj
+
+def calculate_angle(e1, e2):
+    """Calculate angle between two edges in degrees"""
+    v1 = e1.Curve.Direction
+    v2 = e2.Curve.Direction
+    return math.degrees(v1.getAngle(v2))
+
+def process_segments():
+    doc = FreeCAD.ActiveDocument
+    if not doc:
+        print("No active document")
+        return
+        
+    sel = FreeCADGui.Selection.getSelection()
+    if len(sel) != 2:
+        print("Select exactly two line segments")
+        return
+        
+    # Get the edges
+    edge1 = sel[0].Shape.Edges[0]
+    edge2 = sel[1].Shape.Edges[0]
+    
+    # Calculate intersection
+    intersection = calculate_intersection(edge1, edge2)
+    if not intersection:
+        print("Lines are parallel or coincident")
+        return
+        
+    # Create auxiliary segments
+    aux1 = create_aux_segment(edge1, intersection)
+    aux2 = create_aux_segment(edge2, intersection)
+    
+    # Calculate angle
+    angle = calculate_angle(edge1, edge2)
+    angle_aux = calculate_angle(aux1.Shape, aux2.Shape)
+    
+    # Calculate lengths
+    length1 = aux1.Shape.Length
+    length2 = aux2.Shape.Length
+    
+    # Print results
+    print("\n" + "="*40)
+    print(f"Intersection point: ({intersection.X:.2f}, {intersection.Y:.2f}, {intersection.Z:.2f})")
+    print(f"Angle between segments: {angle:.1f}° ({angle_aux:.1f}°)")
+    print(f"Segment 1 length: {length1:.2f} mm")
+    print(f"Segment 2 length: {length2:.2f} mm")
+    
+    # Add intersection point to document
+    point_obj = doc.addObject("Part::Vertex", "Intersection")
+    point_obj.X = intersection.X
+    point_obj.Y = intersection.Y
+    point_obj.Z = intersection.Z
+    point_obj.ViewObject.PointSize = 5
+    point_obj.ViewObject.PointColor = (0.0, 1.0, 0.0)  # Green
+    
+    doc.recompute()
+    return intersection
+
+# Run the processing
+process_segments()

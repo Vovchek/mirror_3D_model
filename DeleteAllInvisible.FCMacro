@@ -1,0 +1,8 @@
+import FreeCAD
+
+doc = FreeCAD.ActiveDocument
+if doc:
+    invisible_objects = [obj for obj in doc.Objects if hasattr(obj, 'ViewObject') and not obj.ViewObject.Visibility]
+    for obj in invisible_objects:
+        doc.removeObject(obj.Name)
+    print(f"Deleted {len(invisible_objects)} invisible objects")

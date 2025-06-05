@@ -1,0 +1,88 @@
+import FreeCAD, FreeCADGui, Part
+import numpy as np
+from scipy.spatial.distance import cdist
+
+def path_deviation(path_obj):
+    """Calculate deviation of path from straight line"""
+    if not hasattr(path_obj, 'Shape') or not path_obj.Shape.Edges:
+        print("Selected object has no edges")
+        return None
+    
+    # Extract all points from path edges
+    points = []
+    for edge in path_obj.Shape.Edges:
+        points.extend(edge.discretize(Number=100))  # Adjust number for precision
+    
+    if len(points) < 2:
+        print("Not enough points in path")
+        return None
+    
+    # Convert to numpy array
+    pts_array = np.array([(p.x, p.y, p.z) for p in points])
+    
+    # Create line between first and last point
+    start_point = pts_array[0]
+    end_point = pts_array[-1]
+    line_vector = end_point - start_point
+    line_length = np.linalg.norm(line_vector)
+    
+    if line_length < 1e-6:  # Basically zero length
+        print("Path starts and ends at same point")
+        return None
+    
+    # Calculate perpendicular distances from each point to the line
+    # Using vector projection formula
+    t_values = np.dot(pts_array - start_point, line_vector) / (line_length**2)
+    projected_points = start_point + t_values[:, np.newaxis] * line_vector
+    distances = np.linalg.norm(pts_array - projected_points, axis=1)
+    
+    # Calculate statistics
+    max_deviation = np.max(distances)
+    avg_deviation = np.mean(distances)
+    relative_deviation = max_deviation / line_length if line_length > 0 else 0
+    
+    return {
+        'max_deviation': max_deviation,
+        'avg_deviation': avg_deviation,
+        'relative_deviation': relative_deviation,
+        'line_length': line_length,
+        'point_count': len(points)
+    }
+
+def draw_deviation_line(obj):
+    """Draw the reference line in 3D view"""
+    start = obj.Shape.Edges[0].firstVertex().Point
+    end = obj.Shape.Edges[-1].lastVertex().Point
+    
+    line = Part.makeLine(start, end)
+    line_obj = FreeCAD.ActiveDocument.addObject("Part::Feature", "DeviationLine")
+    line_obj.Shape = line
+    line_obj.ViewObject.LineColor = (1.0, 0.0, 0.0)  # Red
+    line_obj.ViewObject.LineWidth = 2.0
+    return line_obj
+
+def show_deviation():
+    sel = FreeCADGui.Selection.getSelection()
+    if not sel:
+        print("No object selected")
+        return
+    
+    results = []
+    for obj in sel:
+        dev = path_deviation(obj)
+        if dev:
+            print(f"\nPath '{obj.Label}' deviation analysis:")
+            print(f"Line length: {dev['line_length']:.3f} mm")
+            print(f"Max deviation: {dev['max_deviation']:.3f} mm")
+            print(f"Avg deviation: {dev['avg_deviation']:.3f} mm")
+            print(f"Relative deviation: {dev['relative_deviation']:.2%}")
+            print(f"Analyzed {dev['point_count']} points")
+            results.append((obj.Label, dev))
+            draw_deviation_line(obj)
+        else:
+            print(f"\nCould not analyze object '{obj.Label}'")
+    
+    return results
+
+# Run the analysis
+show_deviation()

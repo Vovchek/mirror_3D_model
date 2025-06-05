@@ -32,8 +32,8 @@ z0 = sag(ZRC)
 theta = math.atan((z2 - z1)/DX)  # angle calculation
 
 # Outer lowering
-crown_D = 246.4      # Rear crown diameter
-crown_h = 53         # Crown height
+crown_D = 246.52      # Rear crown diameter
+crown_h = 53          # Crown height
 n_flats = 12
 crown_flat_d = 242.41  # Distance between opposite flats
 
@@ -43,6 +43,9 @@ fillet_vertical = 6     # Vertical edge fillet radius [mm]
 fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
 safety_margin = 10      # Extra extrusion margin [mm]
 
+# ========== Mounting holes ================
+hole_diameter = 15
+hole_position_x = 54.75
 
 # lateral througt holes
 D_lat_hole = 7
@@ -403,10 +406,6 @@ pocket = mirror_shape_about_plane(pocket, -60)
 if show_features:
     Part.show(pocket, "poly_pocket_6")
 final_mirror = final_mirror.cut(pocket)
-
-# ========== Mounting holes ================
-hole_diameter = 15
-hole_position_x = 55
 
 # Create cylindrical pocket (extruded circle)
 # Place pocket top at safety margin above mirror surface (Z= safety_margin)

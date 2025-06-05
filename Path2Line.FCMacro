@@ -1,0 +1,69 @@
+import FreeCAD, FreeCADGui, Part
+
+def convert_to_line(path_obj):
+    """Convert a path to a straight line segment"""
+    if not hasattr(path_obj, 'Shape') or not path_obj.Shape:
+        return None
+    
+    # Extract start and end points
+    try:
+        start_point = path_obj.Shape.firstVertex().Point
+        end_point = path_obj.Shape.lastVertex().Point
+    except:
+        # Fallback for compound shapes
+        vertices = path_obj.Shape.Vertexes
+        if len(vertices) < 2:
+            return None
+        start_point = vertices[0].Point
+        end_point = vertices[-1].Point
+    
+    # Create line segment
+    line = Part.makeLine(start_point, end_point)
+    return line
+
+def convert_paths_to_lines():
+    doc = FreeCAD.ActiveDocument
+    if not doc:
+        print("No active document")
+        return
+        
+    sel = FreeCADGui.Selection.getSelection()
+    if not sel:
+        print("No objects selected")
+        return
+        
+    new_objects = []
+    
+    for obj in sel:
+        # Skip non-path objects
+        if not hasattr(obj, 'Shape'):
+            print(f"Skipping non-shape object: {obj.Label}")
+            continue
+            
+        # Convert to line
+        line_shape = convert_to_line(obj)
+        if not line_shape:
+            print(f"Could not convert {obj.Label} to line")
+            continue
+            
+        # Create new object
+        new_obj = doc.addObject("Part::Feature", "LineSegment")
+        new_obj.Shape = line_shape
+        
+        # Preserve appearance
+        if hasattr(obj, 'ViewObject'):
+            new_obj.ViewObject.LineColor = obj.ViewObject.LineColor
+            new_obj.ViewObject.LineWidth = obj.ViewObject.LineWidth
+            obj.ViewObject.Visibility = False  # Hide original
+        
+        new_objects.append(new_obj.Label)
+        print(f"Created line segment for {obj.Label}")
+    
+    if new_objects:
+        doc.recompute()
+        print(f"Created {len(new_objects)} line segments: {', '.join(new_objects)}")
+    else:
+        print("No valid paths converted")
+
+# Run the conversion
+convert_paths_to_lines()
