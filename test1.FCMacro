@@ -40,6 +40,103 @@ fillet_vertical = 6     # Vertical edge fillet radius [mm]
 fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
 safety_margin = 10      # Extra extrusion margin [mm]
 
+
+def robust_fillet(shape, edge_ref, radius, try_alternate=True):
+    """
+    Create a fillet on a shape with comprehensive error handling
+    :param shape: Input shape (Solid or Compound)
+    :param edge_ref: Edge reference (index, tag, or edge object)
+    :param radius: Fillet radius
+    :param try_alternate: Attempt alternate methods if standard fails
+    :return: Filleted shape or initial
+    """
+    doc = App.ActiveDocument
+    
+    # Method 1: Direct shape operation
+    try:
+        if isinstance(edge_ref, int):
+            # Try by index
+            result = shape.makeFillet(radius, [shape.Edges[edge_ref]])
+        elif isinstance(edge_ref, Part.Edge):
+            # Try by edge object
+            result = shape.makeFillet(radius, [edge_ref])
+        else:
+            # Try by tag
+            for edge in shape.Edges:
+                if edge.Tag == edge_ref:
+                    result = shape.makeFillet(radius, [edge])
+                    break
+            else:
+                raise ValueError("Edge not found by tag")
+        
+        if result.isValid() and result.Solids:
+            return result
+    except Exception as e:
+        print(f"Direct fillet failed: {str(e)}")
+    
+    # Method 2: Temporary document objects
+    if try_alternate:
+        try:
+            # Create temporary feature
+            temp_name = "TempFilletShape"
+            if hasattr(doc, temp_name):
+                doc.removeObject(temp_name)
+                
+            temp_feature = doc.addObject("Part::Feature", temp_name)
+            temp_feature.Shape = shape
+            doc.recompute()
+            
+            # Create fillet feature
+            fillet = doc.addObject("Part::Fillet", "TempFillet")
+            fillet.Base = temp_feature
+            
+            # Determine edge specification
+            if isinstance(edge_ref, int):
+                fillet.Edges = [(edge_ref, radius, radius)]
+            else:
+                # Find edge index by geometry
+                for i, edge in enumerate(temp_feature.Shape.Edges):
+                    if edge.isSame(edge_ref):
+                        fillet.Edges = [(i, radius, radius)]
+                        break
+                else:
+                    raise ValueError("Edge not found in temporary shape")
+            
+            doc.recompute()
+            
+            # Validate result
+            if fillet.Shape.isValid() and fillet.Shape.Solids:
+                result = fillet.Shape.copy()
+                
+                # Cleanup
+                doc.removeObject(fillet.Name)
+                doc.removeObject(temp_feature.Name)
+                return result
+        except Exception as e:
+            print(f"Temporary object method failed: {str(e)}")
+            # Cleanup if partially created
+            for obj_name in ["TempFillet", temp_name]:
+                if hasattr(doc, obj_name):
+                    doc.removeObject(obj_name)
+    
+    # Method 3: Manual face-based filleting (advanced)
+    if try_alternate:
+        print("Attempting face-based filleting...")
+        try:
+            # Find faces adjacent to edge
+            edge = edge_ref if isinstance(edge_ref, Part.Edge) else shape.Edges[edge_ref]
+            adjacent_faces = [face for face in shape.Faces if edge in face.Edges]
+            
+            if len(adjacent_faces) >= 2:
+                # Create fillet between faces
+                result = shape.makeFillet(radius, [adjacent_faces[0], adjacent_faces[1]])
+                if result.isValid():
+                    return result
+        except Exception as e:
+            print(f"Face-based filleting failed: {str(e)}")
+    
+    return shape  # All methods failed
+
 # ========== Create Pocket Template ==========
 
 def create_triangular_prism(edge_length, side_center, direction, height, safety_margin=10, fillet_radius=6):
@@ -96,11 +193,12 @@ ceiling = create_ceiling_sphere(R_bfs, pocket_thickness)
 #Part.show(ceiling, "Ceiling")
 
 # ========== Main Pocket Creation ==========
-def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6):
+def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6, fillet_ceiling=2):
     prism = create_triangular_prism(edge_length, side_center, direction, height, fillet_radius=fillet_vertical)
     check_shape("prism", prism)
     pocket = prism.cut(ceiling)
     check_shape("pocket", pocket)
+    pocket = robust_fillet(pocket, 1, fillet_ceiling)
     return pocket
 
 def angle_between(v1, v2):
@@ -159,9 +257,10 @@ def create_polygonal_prism(points, height, safety_margin=10, fillet_radius=6):
         prism = prism.makeFillet(fillet_radius, vertical_edges)
     return prism
 
-def create_polygonal_pocket(points, height, ceiling, safety_margin=10, fillet_radius=6):
+def create_polygonal_pocket(points, height, ceiling, safety_margin=10, fillet_radius=6, fillet_ceiling=2):
     prism = create_polygonal_prism(points, height, safety_margin, fillet_radius)
     pocket = prism.cut(ceiling)
+    pocket = robust_fillet(pocket, 0, fillet_ceiling)
     return pocket
 
 def mirror_shape_about_plane(shape, angle_deg, plane_point=Base.Vector(0,0,0)):
@@ -184,13 +283,16 @@ def mirror_shape_about_plane(shape, angle_deg, plane_point=Base.Vector(0,0,0)):
 final_mirror = Part.makeCylinder(D/2, T, FreeCAD.Vector(0, 0, -Tc))
 pockets = []
 
-"""
+
 # ========== Create 3 small triangular Pockets ==========
 edge_length = 62.5      # Triangle side length [mm]
 radial_pos = 115.2      # Distance from center to nearest vertex [mm]
+triangle_height = edge_length*math.cos(math.radians(30))
 angles = (0, 120, 240)  # 0°, 120°, 240°
 
 pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+#edges = [pocket.Edges[i] for i in [0,1,11,10,9,6,5]]
+#pocket = pocket.makeFillet(fillet_ceiling, edges)
 
 pockets.append(pocket)
 Part.show(pocket, f"pocket_0")
@@ -249,7 +351,6 @@ polygon_points = [
 ]
 
 height = Tc + 2*safety_margin  # Use your mirror thickness and margin
-# Assume 'ceiling' is already defined (e.g., a sphere as before)
 
 pocket = create_polygonal_pocket(polygon_points, height, ceiling)
 Part.show(pocket, "poly_1")
@@ -274,7 +375,7 @@ final_mirror = final_mirror.cut(pocket)
 pocket = mirror_shape_about_plane(pocket, -60)
 Part.show(pocket, "poly_6")
 final_mirror = final_mirror.cut(pocket)
-"""
+
 # ========== Mounting holes ================
 
 hole_diameter = 15
@@ -287,21 +388,13 @@ depth = Tc + 2 * safety_margin
 pocket_base_z = pocket_top_z - depth
 
 hole = Part.makeCylinder(hole_diameter/2.0, depth, Base.Vector(hole_position_x, 0, pocket_base_z))
-hole = hole.cut(ceiling)
+hole_cut = hole.cut(ceiling)
+#print(f"hole: {hole}")
+hole = robust_fillet(hole_cut, 1, fillet_ceiling)
+#print(f"hole: {hole}")
 Part.show(hole, f"hole_0")
-
-FreeCAD.ActiveDocument.addObject("Part::Fillet","Fillet")
-FreeCAD.ActiveDocument.Fillet.Base = FreeCAD.ActiveDocument.hole_0
-FreeCAD.ActiveDocument.Fillet.Edges = [(2,2.00,2.00)]
-FreeCAD.ActiveDocument.Fillet.Label = "hole_0f"
-FreeCAD.ActiveDocument.Fillet.Name = "hole_0f"
-FreeCADGui.ActiveDocument.hole_0.Visibility = False
-hole = FreeCAD.ActiveDocument.Fillet.Shape
-
-#hole = hole.makeFillet(fillet_ceiling, hole.Edges[0:2])
-#final_mirror = final_mirror.cut(hole)
-Part.show(final_mirror, f"final_mirror")
-"""
+final_mirror = final_mirror.cut(hole)
+#
 hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 final_mirror = final_mirror.cut(hole)
 Part.show(hole, f"hole_120")
@@ -312,7 +405,7 @@ Part.show(hole, f"hole_240")
 
 # ========== Drill lateral holes ===========
 lat_hole = Part.makeCylinder(D_lat_hole/2.0, T_wall, Base.Vector(crown_D/2.0 + 1, 0, H_lat_hole), Base.Vector(-1, 0, 0))
-#Part.show(lat_hole, f"initial_hole")
+Part.show(lat_hole, f"initial_hole")
 
 for i in range(3):
     hole = Part.makeCylinder(D_lat_hole/2.0, T_wall, Base.Vector(crown_D/2.0 + 1, 0, H_lat_hole), Base.Vector(-1, 0, 0))
@@ -321,12 +414,10 @@ for i in range(3):
     Part.show(hole, f"lat_hole_{lat_hole_angles[i]}")
     final_mirror = final_mirror.cut(hole)
 
-
-
 # ========== Finalize and Display ==========
-#Part.show(final_mirror, "MirrorWithPockets")
+Part.show(final_mirror, "MirrorWithPockets")
 
-
+"""
 #================================= Section to check geometry ===============================
 def create_section(body, slice_size, slice_position, slice_dirZ):
     if slice_size <= 0:

@@ -1,0 +1,120 @@
+import FreeCAD as App
+import FreeCADGui as Gui
+import Part
+
+def robust_fillet(shape, edge_ref, radius, try_alternate=True):
+    """
+    Create a fillet on a shape with comprehensive error handling
+    :param shape: Input shape (Solid or Compound)
+    :param edge_ref: Edge reference (index, tag, or edge object)
+    :param radius: Fillet radius
+    :param try_alternate: Attempt alternate methods if standard fails
+    :return: Filleted shape or None
+    """
+    doc = App.ActiveDocument
+    
+    # Method 1: Direct shape operation
+    try:
+        if isinstance(edge_ref, int):
+            # Try by index
+            result = shape.makeFillet(radius, [shape.Edges[edge_ref]])
+        elif isinstance(edge_ref, Part.Edge):
+            # Try by edge object
+            result = shape.makeFillet(radius, [edge_ref])
+        else:
+            # Try by tag
+            for edge in shape.Edges:
+                if edge.Tag == edge_ref:
+                    result = shape.makeFillet(radius, [edge])
+                    break
+            else:
+                raise ValueError("Edge not found by tag")
+        
+        if result.isValid() and result.Solids:
+            return result
+    except Exception as e:
+        print(f"Direct fillet failed: {str(e)}")
+    
+    # Method 2: Temporary document objects
+    if try_alternate:
+        try:
+            # Create temporary feature
+            temp_name = "TempFilletShape"
+            if hasattr(doc, temp_name):
+                doc.removeObject(temp_name)
+                
+            temp_feature = doc.addObject("Part::Feature", temp_name)
+            temp_feature.Shape = shape
+            doc.recompute()
+            
+            # Create fillet feature
+            fillet = doc.addObject("Part::Fillet", "TempFillet")
+            fillet.Base = temp_feature
+            
+            # Determine edge specification
+            if isinstance(edge_ref, int):
+                fillet.Edges = [(edge_ref, radius, radius)]
+            else:
+                # Find edge index by geometry
+                for i, edge in enumerate(temp_feature.Shape.Edges):
+                    if edge.isSame(edge_ref):
+                        fillet.Edges = [(i, radius, radius)]
+                        break
+                else:
+                    raise ValueError("Edge not found in temporary shape")
+            
+            doc.recompute()
+            
+            # Validate result
+            if fillet.Shape.isValid() and fillet.Shape.Solids:
+                result = fillet.Shape.copy()
+                
+                # Cleanup
+                doc.removeObject(fillet.Name)
+                doc.removeObject(temp_feature.Name)
+                return result
+        except Exception as e:
+            print(f"Temporary object method failed: {str(e)}")
+            # Cleanup if partially created
+            for obj_name in ["TempFillet", temp_name]:
+                if hasattr(doc, obj_name):
+                    doc.removeObject(obj_name)
+    
+    # Method 3: Manual face-based filleting (advanced)
+    if try_alternate:
+        print("Attempting face-based filleting...")
+        try:
+            # Find faces adjacent to edge
+            edge = edge_ref if isinstance(edge_ref, Part.Edge) else shape.Edges[edge_ref]
+            adjacent_faces = [face for face in shape.Faces if edge in face.Edges]
+            
+            if len(adjacent_faces) >= 2:
+                # Create fillet between faces
+                result = shape.makeFillet(radius, [adjacent_faces[0], adjacent_faces[1]])
+                if result.isValid():
+                    return result
+        except Exception as e:
+            print(f"Face-based filleting failed: {str(e)}")
+    
+    return None  # All methods failed
+
+# 1. Create shapes in memory
+box = Part.makeBox(10, 10, 10)
+cylinder = Part.makeCylinder(3, 20)
+
+# 2. Perform boolean operations
+difference = box.cut(cylinder)
+
+# 3. Apply fillet
+filleted = robust_fillet(difference, 0, 2.0)  # Fillet first edge
+
+# 4. Further operations
+sphere = Part.makeSphere(5)
+final_shape = filleted.fuse(sphere)
+
+# 5. Only add final result to document
+if final_shape.isValid():
+    feature = App.ActiveDocument.addObject("Part::Feature", "FinalPart")
+    feature.Shape = final_shape
+    feature.ViewObject.ShapeColor = (0.8, 0.2, 0.2)  # Set color
+    

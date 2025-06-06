@@ -10,12 +10,12 @@ slice_position = FreeCAD.Vector(-slice_size/2.0, 0, -slice_size/2.0)
 c = 1/773.44    # Curvature [mm⁻¹]
 k = -1.0504     # Conic constant
 D = 276.41      # Mirror diameter [mm]
-ZR = 140.0      # ZR in Optical Reference Frame (ORF)
-ZRC = 142.0
+ZR = 140.0      # ZR in Optical Reference Frame (ORF) [mm*]
+ZRC = 142.0     # ZR in Part Refeence Frame (PRF) [mm*]
 T = 62.13       # Mirror thickness [mm]
 Tc = 50.0		# Mirror center thickness [mm]
 num_points = 500 # Increased resolution
-R_bfs = 799.5   # Best Fit Sphere radius [mm]
+R_bfs = 799.5   # Best Fit Sphere radius [mm*]
 
 def sag(r):
     numerator = c * r**2  # Negative for concave
@@ -23,7 +23,7 @@ def sag(r):
     return numerator / denominator
 
 # ========== Calculate True OAA (θ) ==========
-DX = 272 # picked-up value
+DX = 272 # [mm*] picked-up value
 r1 = ZR - DX/2
 r2 = ZR + DX/2
 z1 = sag(r1)
@@ -31,11 +31,12 @@ z2 = sag(r2)
 z0 = sag(ZRC)
 theta = math.atan((z2 - z1)/DX)  # angle calculation
 
+# asterisk after mm [mm*] in parameter comment means hand-measured value, not reliable
 # Outer lowering
-crown_D = 246.52      # Rear crown diameter
-crown_h = 53          # Crown height
+crown_D = 246.52      # Rear crown diameter [mm*] varies a lot from direct measurements
+crown_h = 53          # Crown height [mm]
 n_flats = 12
-crown_flat_d = 242.41  # Distance between opposite flats
+crown_flat_d = 242.41  # Distance between opposite flats [mm]
 
 # ========== Pockets' Parameters ==========
 pocket_thickness = 6    # Material thickness [mm]
@@ -43,12 +44,20 @@ fillet_vertical = 6     # Vertical edge fillet radius [mm]
 fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
 safety_margin = 10      # Extra extrusion margin [mm]
 
+polygon_points = [
+    Base.Vector(58, 5, 0),
+    Base.Vector(58, 99, 0),
+    Base.Vector(76, 89, 0),
+    Base.Vector(89, 76, 0),
+    Base.Vector(112.5, 35.8, 0),
+] # [mm*]
+
 # ========== Mounting holes ================
-hole_diameter = 15
-hole_position_x = 54.75
+hole_diameter = 15      # [mm]
+hole_position_x = 55.00 # [mm*]
 
 # lateral througt holes
-D_lat_hole = 7
+D_lat_hole = 7          # [mm]
 T_wall = 6 + 4 # +4 to make sure drill through
 H_lat_hole = -Tc + 36.73
 lat_hole_angles = [150, 60, 300]
@@ -193,7 +202,101 @@ if show_features:
 mirror_hat = mirror_hat.cut(ring_to_remove)
 
 #================================= Pockets ===============================
-
+def robust_fillet(shape, edge_ref, radius, try_alternate=True):
+    """
+    Create a fillet on a shape with comprehensive error handling
+    :param shape: Input shape (Solid or Compound)
+    :param edge_ref: Edge reference (index, tag, or edge object)
+    :param radius: Fillet radius
+    :param try_alternate: Attempt alternate methods if standard fails
+    :return: Filleted shape or initial
+    """
+    doc = App.ActiveDocument
+    
+    # Method 1: Direct shape operation
+    try:
+        if isinstance(edge_ref, int):
+            # Try by index
+            result = shape.makeFillet(radius, [shape.Edges[edge_ref]])
+        elif isinstance(edge_ref, Part.Edge):
+            # Try by edge object
+            result = shape.makeFillet(radius, [edge_ref])
+        else:
+            # Try by tag
+            for edge in shape.Edges:
+                if edge.Tag == edge_ref:
+                    result = shape.makeFillet(radius, [edge])
+                    break
+            else:
+                raise ValueError("Edge not found by tag")
+        
+        if result.isValid() and result.Solids:
+            return result
+    except Exception as e:
+        print(f"Direct fillet failed: {str(e)}")
+    
+    # Method 2: Temporary document objects
+    if try_alternate:
+        try:
+            # Create temporary feature
+            temp_name = "TempFilletShape"
+            if hasattr(doc, temp_name):
+                doc.removeObject(temp_name)
+                
+            temp_feature = doc.addObject("Part::Feature", temp_name)
+            temp_feature.Shape = shape
+            doc.recompute()
+            
+            # Create fillet feature
+            fillet = doc.addObject("Part::Fillet", "TempFillet")
+            fillet.Base = temp_feature
+            
+            # Determine edge specification
+            if isinstance(edge_ref, int):
+                fillet.Edges = [(edge_ref, radius, radius)]
+            else:
+                # Find edge index by geometry
+                for i, edge in enumerate(temp_feature.Shape.Edges):
+                    if edge.isSame(edge_ref):
+                        fillet.Edges = [(i, radius, radius)]
+                        break
+                else:
+                    raise ValueError("Edge not found in temporary shape")
+            
+            doc.recompute()
+            
+            # Validate result
+            if fillet.Shape.isValid() and fillet.Shape.Solids:
+                result = fillet.Shape.copy()
+                
+                # Cleanup
+                doc.removeObject(fillet.Name)
+                doc.removeObject(temp_feature.Name)
+                return result
+        except Exception as e:
+            print(f"Temporary object method failed: {str(e)}")
+            # Cleanup if partially created
+            for obj_name in ["TempFillet", temp_name]:
+                if hasattr(doc, obj_name):
+                    doc.removeObject(obj_name)
+    
+    # Method 3: Manual face-based filleting (advanced)
+    if try_alternate:
+        print("Attempting face-based filleting...")
+        try:
+            # Find faces adjacent to edge
+            edge = edge_ref if isinstance(edge_ref, Part.Edge) else shape.Edges[edge_ref]
+            adjacent_faces = [face for face in shape.Faces if edge in face.Edges]
+            
+            if len(adjacent_faces) >= 2:
+                # Create fillet between faces
+                result = shape.makeFillet(radius, [adjacent_faces[0], adjacent_faces[1]])
+                if result.isValid():
+                    return result
+        except Exception as e:
+            print(f"Face-based filleting failed: {str(e)}")
+    
+    return shape  # All methods failed
 
 # ========== Create Pocket Template ==========
 
@@ -250,9 +353,10 @@ def create_ceiling_sphere(R_bfs, pocket_thickness):
 ceiling = create_ceiling_sphere(R_bfs, pocket_thickness)
 
 # ========== Main Pocket Creation ==========
-def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6):
+def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6, fillet_ceiling=2):
     prism = create_triangular_prism(edge_length, side_center, direction, height, fillet_radius=fillet_vertical)
     pocket = prism.cut(ceiling)
+    pocket = robust_fillet(pocket, 1, fillet_ceiling)
     return pocket
 
 def angle_between(v1, v2):
@@ -311,16 +415,17 @@ def create_polygonal_prism(points, height, safety_margin=10, fillet_radius=6):
         prism = prism.makeFillet(fillet_radius, vertical_edges)
     return prism
 
-def create_polygonal_pocket(points, height, ceiling, safety_margin=10, fillet_radius=6):
+def create_polygonal_pocket(points, height, ceiling, safety_margin=10, fillet_radius=6, fillet_ceiling=2):
     prism = create_polygonal_prism(points, height, safety_margin, fillet_radius)
     pocket = prism.cut(ceiling)
+    pocket = robust_fillet(pocket, 1, fillet_ceiling)
     return pocket
 
 final_mirror = mirror_hat
 
 # ========== Create 3 small triangular Pockets ==========
-edge_length = 62.5      # Triangle side length [mm]
-radial_pos = 115.2      # Distance from center to nearest vertex [mm]
+edge_length = 62.59     # Triangle side length [mm*]
+radial_pos = 115.2      # Distance from center to nearest edge [mm] 6 mm from crown edge
 angles = (0, 120, 240)  # 0°, 120°, 240°
 
 pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
@@ -339,7 +444,7 @@ if show_features:
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Create 3 bigger triangular Pockets ==========
-edge_length = 85      # Triangle side length [mm]
+edge_length = 84.87     # Triangle side length [mm*]
 radial_pos = -30.5      # Distance from center to nearest vertex [mm]
 angles = (0, 120, 240)  # 0°, 120°, 240°
 
@@ -366,14 +471,6 @@ if show_features:
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Create Polygonal Pockets ==========
-polygon_points = [
-    Base.Vector(58, 5, 0),
-    Base.Vector(58, 99, 0),
-    Base.Vector(76, 89, 0),
-    Base.Vector(89, 76, 0),
-    Base.Vector(112.5, 35.8, 0),
-]
-
 height = Tc + 2*safety_margin  # Use your mirror thickness and margin
 # Assume 'ceiling' is already defined (e.g., a sphere as before)
 
@@ -415,6 +512,7 @@ pocket_base_z = pocket_top_z - depth
 
 hole = Part.makeCylinder(hole_diameter/2.0, depth, Base.Vector(hole_position_x, 0, pocket_base_z))
 hole = hole.cut(ceiling)
+hole = robust_fillet(hole, 1, fillet_ceiling)
 
 if show_features:
     Part.show(hole, "hole_0")
