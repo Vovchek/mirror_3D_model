@@ -93,6 +93,7 @@ def create_ceiling_sphere(R_bfs, pocket_thickness):
     return sphere
 
 ceiling = create_ceiling_sphere(R_bfs, pocket_thickness)
+#Part.show(ceiling, "Ceiling")
 
 # ========== Main Pocket Creation ==========
 def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6):
@@ -237,7 +238,7 @@ pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(1
 pockets.append(pocket)
 Part.show(pocket, f"center_pocket")
 final_mirror = final_mirror.cut(pocket)
-"""
+
 # ========== Create Polygonal Pockets ==========
 polygon_points = [
     Base.Vector(58, 5, 0),
@@ -273,7 +274,7 @@ final_mirror = final_mirror.cut(pocket)
 pocket = mirror_shape_about_plane(pocket, -60)
 Part.show(pocket, "poly_6")
 final_mirror = final_mirror.cut(pocket)
-
+"""
 # ========== Mounting holes ================
 
 hole_diameter = 15
@@ -287,11 +288,20 @@ pocket_base_z = pocket_top_z - depth
 
 hole = Part.makeCylinder(hole_diameter/2.0, depth, Base.Vector(hole_position_x, 0, pocket_base_z))
 hole = hole.cut(ceiling)
-
-
-final_mirror = final_mirror.cut(hole)
 Part.show(hole, f"hole_0")
 
+FreeCAD.ActiveDocument.addObject("Part::Fillet","Fillet")
+FreeCAD.ActiveDocument.Fillet.Base = FreeCAD.ActiveDocument.hole_0
+FreeCAD.ActiveDocument.Fillet.Edges = [(2,2.00,2.00)]
+FreeCAD.ActiveDocument.Fillet.Label = "hole_0f"
+FreeCAD.ActiveDocument.Fillet.Name = "hole_0f"
+FreeCADGui.ActiveDocument.hole_0.Visibility = False
+hole = FreeCAD.ActiveDocument.Fillet.Shape
+
+#hole = hole.makeFillet(fillet_ceiling, hole.Edges[0:2])
+#final_mirror = final_mirror.cut(hole)
+Part.show(final_mirror, f"final_mirror")
+"""
 hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 final_mirror = final_mirror.cut(hole)
 Part.show(hole, f"hole_120")
@@ -348,6 +358,6 @@ slice_position = FreeCAD.Vector(-slice_size/2.0, 0, -slice_size/2.0)
 section = create_section(final_mirror, slice_size, slice_position, slice_dirZ)
 if not (section is None):
     Part.show(section, "section")
-
+"""
 
 App.ActiveDocument.recompute()
