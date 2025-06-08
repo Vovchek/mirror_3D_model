@@ -1,120 +1,226 @@
 import FreeCAD as App
 import FreeCADGui as Gui
 import Part
+import math
+from FreeCAD import Base
 
-def robust_fillet(shape, edge_ref, radius, try_alternate=True):
+def remove_consecutive_duplicates(points):
+    """Remove consecutive duplicate points with curvature support"""
+    new_points = []
+    for point_data in points:
+        point, curvature = point_data
+        if not new_points or (point - new_points[-1][0]).Length > 1e-6:
+            new_points.append((point, curvature))
+    return new_points
+
+def create_polygonal_prism(points, height, safety_margin=10, fillet_radius=6):
     """
-    Create a fillet on a shape with comprehensive error handling
-    :param shape: Input shape (Solid or Compound)
-    :param edge_ref: Edge reference (index, tag, or edge object)
-    :param radius: Fillet radius
-    :param try_alternate: Attempt alternate methods if standard fails
-    :return: Filleted shape or None
+    Create a polygonal prism with arc segments
+    :param points: List of tuples (Base.Vector, curvature)
+                   curvature = 0 for straight segments, >0 for arc radius
+    :param height: Height of the prism
+    :param safety_margin: Z-offset for the base
+    :param fillet_radius: Fillet radius for vertical edges
+    :return: Part.Shape
     """
-    doc = App.ActiveDocument
+    # Process points and remove duplicates
+    points = remove_consecutive_duplicates(points)
     
-    # Method 1: Direct shape operation
+    # Raise all points to the same Z (safety_margin above surface)
+    base_points = [(Base.Vector(p.x, p.y, safety_margin), c) for p, c in points]
+    
+    # Close the polygon if not closed
+    if len(base_points) > 0 and (base_points[0][0] - base_points[-1][0]).Length > 1e-6:
+        base_points.append(base_points[0])
+    
+    # Create edges with arcs where curvature > 0
+    edges = []
+    n = len(base_points)
+    for i in range(n - 1):
+        start, start_curvature = base_points[i]
+        end, end_curvature = base_points[i + 1]
+        
+        # Use curvature from the starting point
+        curvature = start_curvature
+        
+        if abs(curvature) < 1e-6:  # Straight segment
+            edges.append(Part.LineSegment(start, end).toShape())
+        else:  # Arc segment
+            chord_vec = end - start
+            chord_length = chord_vec.Length
+            
+            # Validate curvature radius
+            if abs(curvature) < chord_length / 2:
+                print(f"Warning: Curvature radius {curvature} too small for chord length {chord_length:.2f}")
+                edges.append(Part.LineSegment(start, end).toShape())
+                continue
+                
+            # Calculate perpendicular direction
+            chord_dir = chord_vec.normalize()
+            perp = chord_dir.cross(Base.Vector(0, 0, 1))
+            perp.normalize()
+            
+            # Calculate center and midpoint for arc
+            mid = (start + end) * 0.5
+            d = math.sqrt(curvature**2 - (chord_length/2)**2)
+            
+            # Determine bulge direction based on curvature sign
+            sign = 1.0 if curvature > 0 else -1.0
+            center = mid + perp * d * sign
+            
+            # Create arc through three points
+            try:
+                # Get vectors from center to start and end
+                v1 = start - center
+                v2 = end - center
+                v1.normalize()
+                v2.normalize()
+                
+                # Calculate arc midpoint
+                arc_mid_dir = (v1 + v2).normalize()
+                arc_mid = center + arc_mid_dir * abs(curvature)
+                
+                # Create the arc
+                arc = Part.Arc(start, arc_mid, end)
+                edges.append(arc.toShape())
+            except Exception as e:
+                print(f"Arc creation failed: {str(e)}")
+                edges.append(Part.LineSegment(start, end).toShape())
+    
+    # Create wire and face
+    wire = Part.Wire(edges)
+    face = Part.Face(wire)
+    
+    # Extrude downward to create prism
+    prism = face.extrude(Base.Vector(0, 0, -height))
+
+    # Fillet vertical edges (same as before)
+    if fillet_radius > 0:
+        vertical_edges = []
+        for edge in prism.Edges:
+            v1, v2 = edge.Vertexes
+            if (abs(v1.Point.x - v2.Point.x) < 1e-6 and
+                abs(v1.Point.y - v2.Point.y) < 1e-6 and
+                abs(v1.Point.z - v2.Point.z) > 1e-6):
+                vertical_edges.append(edge)
+        
+        if vertical_edges:
+            try:
+                prism = prism.makeFillet(fillet_radius, vertical_edges)
+            except Exception as e:
+                print(f"Vertical fillet failed: {str(e)}")
+    
+    return prism
+
+def create_polygonal_pocket(points, height, ceiling, safety_margin=10, 
+                           fillet_radius=6, fillet_ceiling=2):
+    """
+    Create a pocket with arc segments in the base polygon
+    :param points: List of tuples (Base.Vector, curvature)
+    :param height: Total depth of the pocket
+    :param ceiling: Ceiling shape to cut from
+    :param safety_margin: Z-offset for the base
+    :param fillet_radius: Fillet radius for vertical edges
+    :param fillet_ceiling: Fillet radius for ceiling edges
+    :return: Part.Shape
+    """
+    prism = create_polygonal_prism(points, height, safety_margin, fillet_radius)
+    pocket = prism.cut(ceiling)
+    
+    # Apply ceiling fillet if needed
+    if fillet_ceiling > 0:
+        # Find top edges (Z near safety_margin)
+        top_edges = []
+        for edge in pocket.Edges:
+            for vertex in edge.Vertexes:
+                if abs(vertex.Point.z - safety_margin) < 1e-6:
+                    top_edges.append(edge)
+                    break
+        
+        if top_edges:
+            try:
+                pocket = pocket.makeFillet(fillet_ceiling, top_edges)
+            except Exception as e:
+                print(f"Ceiling fillet failed: {str(e)}")
+    
+    return pocket
+
+# Utility functions
+def angle_between(v1, v2):
+    """Calculate angle between two vectors in degrees"""
+    dot = v1.dot(v2)
+    mag1 = v1.Length
+    mag2 = v2.Length
+    if mag1 < 1e-7 or mag2 < 1e-7:
+        return 0.0
+    cos_angle = dot / (mag1 * mag2)
+    cos_angle = max(-1.0, min(1.0, cos_angle))
+    angle_rad = math.acos(cos_angle)
+    return math.degrees(angle_rad)
+
+def robust_fillet(shape, edge_ref, radius):
+    """Robust fillet creation with error handling"""
     try:
         if isinstance(edge_ref, int):
-            # Try by index
-            result = shape.makeFillet(radius, [shape.Edges[edge_ref]])
+            return shape.makeFillet(radius, [shape.Edges[edge_ref]])
         elif isinstance(edge_ref, Part.Edge):
-            # Try by edge object
-            result = shape.makeFillet(radius, [edge_ref])
+            return shape.makeFillet(radius, [edge_ref])
         else:
-            # Try by tag
             for edge in shape.Edges:
-                if edge.Tag == edge_ref:
-                    result = shape.makeFillet(radius, [edge])
-                    break
-            else:
-                raise ValueError("Edge not found by tag")
+                if edge.isSame(edge_ref):
+                    return shape.makeFillet(radius, [edge])
+    except:
+        print("Direct fillet failed, using temporary object method")
+        # Create temporary document objects for filleting
+        doc = App.ActiveDocument
+        temp_feature = doc.addObject("Part::Feature", "TempShape")
+        temp_feature.Shape = shape
         
-        if result.isValid() and result.Solids:
-            return result
-    except Exception as e:
-        print(f"Direct fillet failed: {str(e)}")
-    
-    # Method 2: Temporary document objects
-    if try_alternate:
-        try:
-            # Create temporary feature
-            temp_name = "TempFilletShape"
-            if hasattr(doc, temp_name):
-                doc.removeObject(temp_name)
-                
-            temp_feature = doc.addObject("Part::Feature", temp_name)
-            temp_feature.Shape = shape
-            doc.recompute()
-            
-            # Create fillet feature
-            fillet = doc.addObject("Part::Fillet", "TempFillet")
-            fillet.Base = temp_feature
-            
-            # Determine edge specification
-            if isinstance(edge_ref, int):
-                fillet.Edges = [(edge_ref, radius, radius)]
-            else:
-                # Find edge index by geometry
-                for i, edge in enumerate(temp_feature.Shape.Edges):
-                    if edge.isSame(edge_ref):
-                        fillet.Edges = [(i, radius, radius)]
-                        break
-                else:
-                    raise ValueError("Edge not found in temporary shape")
-            
-            doc.recompute()
-            
-            # Validate result
-            if fillet.Shape.isValid() and fillet.Shape.Solids:
-                result = fillet.Shape.copy()
-                
-                # Cleanup
-                doc.removeObject(fillet.Name)
-                doc.removeObject(temp_feature.Name)
-                return result
-        except Exception as e:
-            print(f"Temporary object method failed: {str(e)}")
-            # Cleanup if partially created
-            for obj_name in ["TempFillet", temp_name]:
-                if hasattr(doc, obj_name):
-                    doc.removeObject(obj_name)
-    
-    # Method 3: Manual face-based filleting (advanced)
-    if try_alternate:
-        print("Attempting face-based filleting...")
-        try:
-            # Find faces adjacent to edge
-            edge = edge_ref if isinstance(edge_ref, Part.Edge) else shape.Edges[edge_ref]
-            adjacent_faces = [face for face in shape.Faces if edge in face.Edges]
-            
-            if len(adjacent_faces) >= 2:
-                # Create fillet between faces
-                result = shape.makeFillet(radius, [adjacent_faces[0], adjacent_faces[1]])
-                if result.isValid():
-                    return result
-        except Exception as e:
-            print(f"Face-based filleting failed: {str(e)}")
-    
-    return None  # All methods failed
+        fillet = doc.addObject("Part::Fillet", "TempFillet")
+        fillet.Base = temp_feature
+        
+        # Find edge index
+        for i, edge in enumerate(shape.Edges):
+            if edge.isSame(edge_ref):
+                fillet.Edges = [(i, radius, radius)]
+                break
+        
+        doc.recompute()
+        filleted_shape = fillet.Shape.copy()
+        
+        # Cleanup
+        doc.removeObject(fillet.Name)
+        doc.removeObject(temp_feature.Name)
+        return filleted_shape
 
-# 1. Create shapes in memory
-box = Part.makeBox(10, 10, 10)
-cylinder = Part.makeCylinder(3, 20)
+# Define points with curvature (0 = straight, positive/negative = arc radius)
+points = [
+    (App.Vector(0, 0, 0), 0),      # Straight segment
+    (App.Vector(20, 0, 0), 8),     # Arc segment (radius=8mm)
+    (App.Vector(20, 15, 0), -5),   # Arc segment (radius=5mm, opposite direction)
+    (App.Vector(0, 15, 0), 0)      # Straight segment
+]
 
-# 2. Perform boolean operations
-difference = box.cut(cylinder)
+# Create prism with curved segments
+prism = create_polygonal_prism(points, 10, safety_margin=5, fillet_radius=2)
 
-# 3. Apply fillet
-filleted = robust_fillet(difference, 0, 2.0)  # Fillet first edge
+# Create pocket with ceiling
+R_bfs = 799.5   # Best Fit Sphere radius [mm*]
 
-# 4. Further operations
-sphere = Part.makeSphere(5)
-final_shape = filleted.fuse(sphere)
+def create_ceiling_sphere(R_bfs, pocket_thickness):
+    R_ceiling = R_bfs + pocket_thickness
+    sphere = Part.makeSphere(R_ceiling, Base.Vector(0,0,R_bfs), Base.Vector(0,0,1), -90, -60, 360)
+    return sphere
 
-# 5. Only add final result to document
-if final_shape.isValid():
-    feature = App.ActiveDocument.addObject("Part::Feature", "FinalPart")
-    feature.Shape = final_shape
-    feature.ViewObject.ShapeColor = (0.8, 0.2, 0.2)  # Set color
-    
+ceiling = create_ceiling_sphere(R_bfs, 6)
+pocket = create_polygonal_pocket(points, 10, ceiling, 
+                                fillet_radius=6, fillet_ceiling=2)
+
+# Add to document
+feature = App.ActiveDocument.addObject("Part::Feature", "CurvedPrism")
+feature.Shape = prism
+feature.ViewObject.ShapeColor = (0.8, 0.2, 0.2)
+
+pocket_feature = App.ActiveDocument.addObject("Part::Feature", "CurvedPocket")
+pocket_feature.Shape = pocket
+pocket_feature.ViewObject.ShapeColor = (0.2, 0.8, 0.2)

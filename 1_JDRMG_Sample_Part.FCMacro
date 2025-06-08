@@ -3,7 +3,7 @@ from FreeCAD import Base
 
 show_features = False # show all cut-off features - crown, pockets, notches, etc
 slice_dirZ = FreeCAD.Vector(0, 1, 0) 
-slice_size = 0
+slice_size = 500
 slice_position = FreeCAD.Vector(-slice_size/2.0, 0, -slice_size/2.0)
 
 # ========== Surface and Part Parameters ==========
@@ -44,12 +44,23 @@ fillet_vertical = 6     # Vertical edge fillet radius [mm]
 fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
 safety_margin = 10      # Extra extrusion margin [mm]
 
+# ========== 3 small triangular Pockets ==========
+s3_edge_length = 62.59     # Triangle side length [mm*]
+s3_radial_pos = 115.2      # Distance from center to nearest edge [mm] 6 mm from crown edge
+s3_angles = (0, 120, 240)  # 0°, 120°, 240°
+
+# ========== big 3 lateral + 1 center triangular Pockets ==========
+b3_edge_length = 84.87     # Triangle side length [mm*]
+b3_lat_radial_pos = -30.5      # Distance from center to nearest vertex [mm]
+b3_lat_angles = (0, 120, 240)  # 0°, 120°, 240°
+b3c_radial_pos = -24.5
+
 polygon_points = [
-    Base.Vector(58, 5, 0),
-    Base.Vector(58, 99, 0),
-    Base.Vector(76, 89, 0),
-    Base.Vector(89, 76, 0),
-    Base.Vector(112.5, 35.8, 0),
+    (Base.Vector(58, 5, 0), 0),
+    (Base.Vector(58, 99, 0), 0),
+    (Base.Vector(76, 89, 0), 117.03),
+    (Base.Vector(89, 76, 0), 0),
+    (Base.Vector(112.5, 35.8, 0), 0)
 ] # [mm*]
 
 # ========== Mounting holes ================
@@ -368,51 +379,111 @@ def angle_between(v1, v2):
     return math.degrees(math.acos(dot))
 
 def remove_consecutive_duplicates(points):
+    """Remove consecutive duplicate points with curvature support"""
     new_points = []
-    for p in points:
-        if not new_points or (p - new_points[-1]).Length > 1e-6:
-            new_points.append(p)
+    for point_data in points:
+        point, curvature = point_data
+        if not new_points or (point - new_points[-1][0]).Length > 1e-6:
+            new_points.append((point, curvature))
     return new_points
 
 def create_polygonal_prism(points, height, safety_margin=10, fillet_radius=6):
-    base_points = remove_consecutive_duplicates([Base.Vector(p.x, p.y, safety_margin) for p in points])
+    """
+    Create a polygonal prism with arc segments
+    :param points: List of tuples (Base.Vector, curvature)
+                   curvature = 0 for straight segments, >0 for arc radius
+    :param height: Height of the prism
+    :param safety_margin: Z-offset for the base
+    :param fillet_radius: Fillet radius for vertical edges
+    :return: Part.Shape
+    """
+    # Process points and remove duplicates
+    points = remove_consecutive_duplicates(points)
+    
     # Raise all points to the same Z (safety_margin above surface)
-    base_points = [Base.Vector(p.x, p.y, safety_margin) for p in points]
-    # Close the polygon
-    if base_points[0] != base_points[-1]:
+    base_points = [(Base.Vector(p.x, p.y, safety_margin), c) for p, c in points]
+    
+    # Close the polygon if not closed
+    if len(base_points) > 0 and (base_points[0][0] - base_points[-1][0]).Length > 1e-6:
         base_points.append(base_points[0])
-    wire = Part.makePolygon(base_points)
+    
+    # Create edges with arcs where curvature > 0
+    edges = []
+    n = len(base_points)
+    for i in range(n - 1):
+        start, start_curvature = base_points[i]
+        end, end_curvature = base_points[i + 1]
+        
+        # Use curvature from the starting point
+        curvature = start_curvature
+        
+        if abs(curvature) < 1e-6:  # Straight segment
+            edges.append(Part.LineSegment(start, end).toShape())
+        else:  # Arc segment
+            chord_vec = end - start
+            chord_length = chord_vec.Length
+            
+            # Validate curvature radius
+            if abs(curvature) < chord_length / 2:
+                print(f"Warning: Curvature radius {curvature} too small for chord length {chord_length:.2f}")
+                edges.append(Part.LineSegment(start, end).toShape())
+                continue
+                
+            # Calculate perpendicular direction
+            chord_dir = chord_vec.normalize()
+            perp = chord_dir.cross(Base.Vector(0, 0, 1))
+            perp.normalize()
+            
+            # Calculate center and midpoint for arc
+            mid = (start + end) * 0.5
+            d = math.sqrt(curvature**2 - (chord_length/2)**2)
+            
+            # Determine bulge direction based on curvature sign
+            sign = 1.0 if curvature > 0 else -1.0
+            center = mid + perp * d * sign
+            
+            # Create arc through three points
+            try:
+                # Get vectors from center to start and end
+                v1 = start - center
+                v2 = end - center
+                v1.normalize()
+                v2.normalize()
+                
+                # Calculate arc midpoint
+                arc_mid_dir = (v1 + v2).normalize()
+                arc_mid = center + arc_mid_dir * abs(curvature)
+                
+                # Create the arc
+                arc = Part.Arc(start, arc_mid, end)
+                edges.append(arc.toShape())
+            except Exception as e:
+                print(f"Arc creation failed: {str(e)}")
+                edges.append(Part.LineSegment(start, end).toShape())
+    
+    # Create wire and face
+    wire = Part.Wire(edges)
     face = Part.Face(wire)
-    # Extrude downward
+    
+    # Extrude downward to create prism
     prism = face.extrude(Base.Vector(0, 0, -height))
 
-    # Find vertical edges with internal angle < 120 deg
-    vertical_edges = []
-    n = len(points)
-    for i, edge in enumerate(prism.Edges):
-        v1, v2 = edge.Vertexes
-        # Check if edge is vertical (X, Y unchanged, Z changes)
-        if (abs(v1.Point.x - v2.Point.x) < 1e-6 and
-            abs(v1.Point.y - v2.Point.y) < 1e-6 and
-            abs(v1.Point.z - v2.Point.z) > 1e-6):
-            # Find previous and next base points for angle calculation
-            idx = None
-            for j, p in enumerate(base_points[:-1]):
-                if abs(p.x - v1.Point.x) < 1e-6 and abs(p.y - v1.Point.y) < 1e-6:
-                    idx = j
-                    break
-            if idx is not None:
-                prev = base_points[idx - 1]
-                curr = base_points[idx]
-                next = base_points[(idx + 1) % n]
-                v_prev = curr.sub(prev)
-                v_next = next.sub(curr)
-                angle = angle_between(v_prev, v_next)
-                if angle < 120:
-                    vertical_edges.append(edge)
-    # Apply fillet if any
-    if vertical_edges:
-        prism = prism.makeFillet(fillet_radius, vertical_edges)
+    # Fillet vertical edges (same as before)
+    if fillet_radius > 0:
+        vertical_edges = []
+        for edge in prism.Edges:
+            v1, v2 = edge.Vertexes
+            if (abs(v1.Point.x - v2.Point.x) < 1e-6 and
+                abs(v1.Point.y - v2.Point.y) < 1e-6 and
+                abs(v1.Point.z - v2.Point.z) > 1e-6):
+                vertical_edges.append(edge)
+        
+        if vertical_edges:
+            try:
+                prism = prism.makeFillet(fillet_radius, vertical_edges)
+            except Exception as e:
+                print(f"Vertical fillet failed: {str(e)}")
+    
     return prism
 
 def create_polygonal_pocket(points, height, ceiling, safety_margin=10, fillet_radius=6, fillet_ceiling=2):
@@ -424,31 +495,28 @@ def create_polygonal_pocket(points, height, ceiling, safety_margin=10, fillet_ra
 final_mirror = mirror_hat
 
 # ========== Create 3 small triangular Pockets ==========
-edge_length = 62.59     # Triangle side length [mm*]
-radial_pos = 115.2      # Distance from center to nearest edge [mm] 6 mm from crown edge
-angles = (0, 120, 240)  # 0°, 120°, 240°
-
-pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+#show_features = True
+pocket = create_pocket(s3_edge_length, Base.Vector(s3_radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
 if show_features:
 	Part.show(pocket, "small_3a_pocket_0")
-final_mirror = final_mirror.cut(pocket)
+else:
+    final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 if show_features:
 	Part.show(pocket, "small_3a_pocket_120")
-final_mirror = final_mirror.cut(pocket)
+else:
+    final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 if show_features:
 	Part.show(pocket, "small_3a_pocket_240")
-final_mirror = final_mirror.cut(pocket)
+else:
+    final_mirror = final_mirror.cut(pocket)
+show_features = False
 
 # ========== Create 3 bigger triangular Pockets ==========
-edge_length = 84.87     # Triangle side length [mm*]
-radial_pos = -30.5      # Distance from center to nearest vertex [mm]
-angles = (0, 120, 240)  # 0°, 120°, 240°
-
-pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+pocket = create_pocket(b3_edge_length, Base.Vector(b3_lat_radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
 if show_features:
 	Part.show(pocket, "big_3a_pocket_0")
 final_mirror = final_mirror.cut(pocket)
@@ -464,8 +532,7 @@ if show_features:
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Create 1 center triangular Pocket ==========
-radial_pos = -24.5      # Distance from center to nearest vertex [mm]
-pocket = create_pocket(edge_length, Base.Vector(radial_pos, 0, 0), Base.Vector(1, 0, 0), Tc+2*safety_margin, ceiling)
+pocket = create_pocket(b3_edge_length, Base.Vector(b3c_radial_pos, 0, 0), Base.Vector(1, 0, 0), Tc+2*safety_margin, ceiling)
 if show_features:
 	Part.show(pocket, "big_3a_pocket_center")
 final_mirror = final_mirror.cut(pocket)
