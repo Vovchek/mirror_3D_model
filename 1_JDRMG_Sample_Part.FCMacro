@@ -33,7 +33,7 @@ theta = math.atan((z2 - z1)/DX)  # angle calculation
 
 # asterisk after mm [mm*] in parameter comment means hand-measured value, not reliable
 # Outer lowering
-crown_D = 246.52      # Rear crown diameter [mm*] varies a lot from direct measurements
+crown_D = 246.2       # Rear crown diameter [mm*] varies a lot from direct measurements
 crown_h = 53          # Crown height [mm]
 n_flats = 12
 crown_flat_d = 242.41  # Distance between opposite flats [mm]
@@ -45,22 +45,39 @@ fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
 safety_margin = 10      # Extra extrusion margin [mm]
 
 # ========== 3 small triangular Pockets ==========
-s3_edge_length = 62.59     # Triangle side length [mm*]
+s3_edge_length = 62.59     # Equilateral triangle side length [mm*]
 s3_radial_pos = 115.2      # Distance from center to nearest edge [mm] 6 mm from crown edge
 s3_angles = (0, 120, 240)  # 0°, 120°, 240°
 
 # ========== big 3 lateral + 1 center triangular Pockets ==========
-b3_edge_length = 84.87     # Triangle side length [mm*]
-b3_lat_radial_pos = -30.5      # Distance from center to nearest vertex [mm]
+b3_edge_length = 84.87     # Equilateral triangle side length [mm*]
+b3_lat_radial_pos = -30.5      # Distance from center to nearest edge [mm]
 b3_lat_angles = (0, 120, 240)  # 0°, 120°, 240°
-b3c_radial_pos = -24.5
+b3c_radial_pos = -24.5    # Distance from center to vertical edge [mm]
+
+# ========== Polygonal pockes (made of eq.lat. 3a, one cornr cut @32 mm to vrtx, rounded by crcl R117.1 @{0,0}) ==========
+p_edge_length = 94.38     # Equilateral triangle side length [mm*]
+p_height = p_edge_length*(0.75**0.5)
+p_pos_x = -24.50    # Distance from center to vertical edge [mm]
+p_pos_y = -52.83    # Distance from center to vertical edge [mm]
+p_cut = -crown_flat_d/2 + pocket_thickness
+p_R = crown_D/2.0 - pocket_thickness
+
+p_p1 = Base.Vector(p_pos_x, p_pos_y, 0)
+p_p2 = Base.Vector(p_pos_x, p_cut, 0)
+p_p3 = Base.Vector((p_R**2 - p_cut**2)**0.5, p_cut)
+p_p5 = Base.Vector(p_pos_x+p_height, p_pos_y-p_edge_length/2.0, 0)
+x = 39.604 # soution of p5.y+k*(x-p5.x) + (R**2-x**2)**0.5 = 0, k = L/(2h) = tan(30)
+y = -(p_R**2-x**2)**0.5
+print(f"X:{x}, Y:{y}")
+p_p4 = Base.Vector(x, y, 0) 
 
 polygon_points = [
-    (Base.Vector(58, 5, 0), 0),
-    (Base.Vector(58, 99, 0), 0),
-    (Base.Vector(76, 89, 0), 117.03),
-    (Base.Vector(89, 76, 0), 0),
-    (Base.Vector(112.5, 35.8, 0), 0)
+    (p_p1, 0),
+    (p_p2, 0),
+    (p_p3, -p_R),
+    (p_p4, 0),
+    (p_p5, 0)
 ] # [mm*]
 
 # ========== Mounting holes ================
@@ -498,19 +515,19 @@ final_mirror = mirror_hat
 #show_features = True
 pocket = create_pocket(s3_edge_length, Base.Vector(s3_radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
 if show_features:
-	Part.show(pocket, "small_3a_pocket_0")
+    Part.show(pocket, "small_3a_pocket_0")
 else:
     final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 if show_features:
-	Part.show(pocket, "small_3a_pocket_120")
+    Part.show(pocket, "small_3a_pocket_120")
 else:
     final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 if show_features:
-	Part.show(pocket, "small_3a_pocket_240")
+    Part.show(pocket, "small_3a_pocket_240")
 else:
     final_mirror = final_mirror.cut(pocket)
 show_features = False
@@ -518,40 +535,39 @@ show_features = False
 # ========== Create 3 bigger triangular Pockets ==========
 pocket = create_pocket(b3_edge_length, Base.Vector(b3_lat_radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
 if show_features:
-	Part.show(pocket, "big_3a_pocket_0")
+    Part.show(pocket, "big_3a_pocket_0")
 final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 if show_features:
-	Part.show(pocket, "big_3a_pocket_120")
+    Part.show(pocket, "big_3a_pocket_120")
 final_mirror = final_mirror.cut(pocket)
 
 pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
 if show_features:
-	Part.show(pocket, "big_3a_pocket_240")
+    Part.show(pocket, "big_3a_pocket_240")
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Create 1 center triangular Pocket ==========
 pocket = create_pocket(b3_edge_length, Base.Vector(b3c_radial_pos, 0, 0), Base.Vector(1, 0, 0), Tc+2*safety_margin, ceiling)
 if show_features:
-	Part.show(pocket, "big_3a_pocket_center")
+    Part.show(pocket, "big_3a_pocket_center")
 final_mirror = final_mirror.cut(pocket)
 
 # ========== Create Polygonal Pockets ==========
 height = Tc + 2*safety_margin  # Use your mirror thickness and margin
 # Assume 'ceiling' is already defined (e.g., a sphere as before)
-
 pocket = create_polygonal_pocket(polygon_points, height, ceiling)
 if show_features:
     Part.show(pocket, "poly_pocket_1")
 final_mirror = final_mirror.cut(pocket)
 
-pocket = mirror_shape_about_plane(pocket, 0)
+pocket = mirror_shape_about_plane(pocket, -60)
 if show_features:
     Part.show(pocket, "poly_pocket_2")
 final_mirror = final_mirror.cut(pocket)
 
-pocket = mirror_shape_about_plane(pocket, -60)
+pocket = mirror_shape_about_plane(pocket, 0)
 if show_features:
     Part.show(pocket, "poly_pocket_3")
 final_mirror = final_mirror.cut(pocket)
@@ -561,12 +577,12 @@ if show_features:
     Part.show(pocket, "poly_pocket_4")
 final_mirror = final_mirror.cut(pocket)
 
-pocket = mirror_shape_about_plane(pocket, 0)
+pocket = mirror_shape_about_plane(pocket, 120)
 if show_features:
     Part.show(pocket, "poly_pocket_5")
 final_mirror = final_mirror.cut(pocket)
 
-pocket = mirror_shape_about_plane(pocket, -60)
+pocket = mirror_shape_about_plane(pocket, 0)
 if show_features:
     Part.show(pocket, "poly_pocket_6")
 final_mirror = final_mirror.cut(pocket)
@@ -611,7 +627,7 @@ Part.show(final_mirror, "MirrorWithPockets")
 #================================= Section to check geometry ===============================
 def create_section(body, slice_size, slice_position, slice_dirZ):
     if slice_size <= 0:
-	    return None
+        return None
     # If mirror_body is a Compound, extract its solids
     solids = [s for s in body.Solids]
 
