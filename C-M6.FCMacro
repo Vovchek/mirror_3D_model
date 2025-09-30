@@ -16,34 +16,33 @@ if DOC is None:
     DOC = FreeCAD.newDocument("PuckDoc")
 
 # -------------------- PARAMETERS (edit these as needed) --------------------
-outer_diameter = 303.0
-height = 50.0
+outer_diameter = 200.0
 radius = outer_diameter / 2.0
-
-# Flats (three) - distances and angles (degrees)
-flat_distance_from_center = 148.0
-flat_angles_deg = [90, 210, 330]
+height = 30.0
+Tc = 30.0
+Rc = math.inf
 
 # Blind holes (from generatrix towards center)
 hole_diameter = 10.0
 hole_depth = 15.0
-hole_angles_deg = [30, 150, 270]
+hole_angles_deg = [0, 120, 240]
+hole_rpos = radius
+
+# Flats marked 'Critical Zone' (three) - distances and angles (degrees)
+flat_critical_distance_from_center = 98.0
+flat_critical_angles_deg = [60, 180, 300]
+flat_critical_length = 2*(radius**2 - flat_critical_distance_from_center**2)**0.5
 
 # Facet (approximation using fillet)
 facet_leg = 2.0
 
 # Notches (right-angled dents)
-notch_angles = [0, 180, 270]
+notch_angles = []
 notch_depth = 1.0
 # NOTE: to make the hypotenuse tangent and the triangle right-angled with the right angle at
 # the inner vertex, the tangential opening (hypotenuse length) must be 2*notch_depth.
 # That yields legs length = sqrt(2)*notch_depth.
 notch_tangential_opening = 2.0 * notch_depth
-
-# Margins for cutting solids so they are definitely big enough
-tangential_margin = 50.0
-radial_thickness = radius + 50.0
-z_margin = 10.0
 
 # -------------------- BUILD BASE CYLINDER --------------------
 base_cyl = Part.makeCylinder(radius, height, Base.Vector(0, 0, 0), Base.Vector(0, 0, 1))
@@ -61,68 +60,43 @@ result = result.cut(cutter_top)
 cutter_bot = cutter_top.mirror(Base.Vector(0, 0, facet_leg/2), Base.Vector(0, 0, 1))
 result = result.cut(cutter_bot)
 
-#Part.show(cutter_bot, "CutterTop")
+# Function to make a bevel cutter box for one flat, bottom or top
+def make_cutter_box(theta_deg, rpos, flat_size):
+    # Box dimensions: wide enough along tangent, deep enough radially
+    box_w = radius - rpos   # tangent length
+    box_d = flat_size       # radial length
+    box_h = height
+    pos = FreeCAD.Vector(rpos, -box_d/2, 0)
+    
+    box = Part.makeBox(box_w, box_d, box_h, pos)
+    
+    box.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), theta_deg)
+    return box
 
 # Function to make a bevel cutter box for one flat, bottom or top
-def make_bevel_box(theta_deg, zpos):
+def make_bevel_box(theta_deg, rpos, zpos, flat_length):
     # Box dimensions: wide enough along tangent, deep enough radially
     box_w = 40.0   # tangent length
-    box_d = 80.0   # radial length
+    box_d = flat_length   # radial length
     box_h = facet_leg * 2.0
     
     if zpos < height/2 :
         dir = FreeCAD.Vector(1, 0, -1)
-        pos = FreeCAD.Vector(flat_distance_from_center, -box_d/2, zpos + facet_leg)
+        pos = FreeCAD.Vector(rpos, -box_d/2, zpos + facet_leg)
     else:
         dir = FreeCAD.Vector(1, 0, 1)
-        pos = FreeCAD.Vector(flat_distance_from_center - facet_leg, -box_d/2, zpos)
+        pos = FreeCAD.Vector(rpos - facet_leg, -box_d/2, zpos)
     box = Part.makeBox(box_w, box_d, box_h, pos, dir)
     
     box.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), theta_deg)
     return box
 
 # -------------------- CREATE FLAT CUTS (FIXED: cut the outside) --------------------
-# Strategy for each flat at angle theta:
-# - Define unit radial vector n = (cos, sin)
-# - Define tangential unit vector t = (-sin, cos)
-# - Make a large box whose local Y axis (before rotation) will be mapped to -n (inward)
-# - Place the box so that its local Y = box_thickness maps to the plane n . P = flat_distance_from_center
-#   (i.e. the box occupies the outside region beyond the plane). This avoids removing the puck core.
-
+#
 cut_shapes = []
-box_height = height + 2.0 * z_margin
-box_width = 2.0 * radius + tangential_margin  # extent along tangential direction (X local)
-box_thickness = radial_thickness  # extent along local Y (will point inward with chosen rotation)
 
-for theta_deg in flat_angles_deg:
-    theta = math.radians(theta_deg)
-    nx = math.cos(theta)
-    ny = math.sin(theta)
-    # tangential direction (local X in global coords)
-    tx = -math.sin(theta)
-    ty = math.cos(theta)
-    # choose rotation so that local X -> tangential, local Y -> -radial (inward)
-    rot_angle = theta_deg + 90.0
-    rot = FreeCAD.Rotation(Base.Vector(0, 0, 1), rot_angle)
-
-    # Create the box in local coordinates: spans x:[0,box_width], y:[0,box_thickness], z:[0,box_height]
-    box = Part.makeBox(box_width, box_thickness, box_height)
-
-    # We want the global position of local point (0, box_thickness, 0) to be on the cutting plane
-    # at Pcenter = n * flat_distance_from_center. Therefore the local-origin in global coords is:
-    # origin_global = Pcenter - Rot * Vector(0, box_thickness, 0)  = Pcenter - (localY_global * box_thickness)
-    Pcenter_x = nx * flat_distance_from_center
-    Pcenter_y = ny * flat_distance_from_center
-    # localY_global = Rot * (0,1,0) = direction of local Y in global coords (this equals -n for our rot)
-    # but rather than computing it explicitly, we can use n (nx,ny) and the known sign: Rot maps (0,1,0) -> -n.
-    # So origin_global = Pcenter - (-n) * box_thickness = Pcenter + n * box_thickness
-    origin_x = Pcenter_x - (box_width / 2.0) * tx + nx * box_thickness
-    origin_y = Pcenter_y - (box_width / 2.0) * ty + ny * box_thickness
-    origin_z = -z_margin
-
-    placement = FreeCAD.Placement(Base.Vector(origin_x, origin_y, origin_z), rot)
-    box.Placement = placement
-
+for theta_deg in flat_critical_angles_deg:
+    box = make_cutter_box(theta_deg, flat_critical_distance_from_center, flat_critical_length)
     cut_shapes.append(box)
 
 # Subtract flats
@@ -132,17 +106,15 @@ for i, shp in enumerate(cut_shapes):
     except Exception as e:
         FreeCAD.Console.PrintError(f"Failed to subtract flat {i} at shape: {e}")
 
-# --- Cut bevels for all 3 flats ---
-for theta in flat_angles_deg:
+# --- Cut bevels for all 3 critical flats ---
+for theta in flat_critical_angles_deg:
     # bottom bevel
-    btm_box = make_bevel_box(theta, 0)
+    btm_box = make_bevel_box(theta, flat_critical_distance_from_center, 0, flat_critical_length)
     result = result.cut(btm_box)
-    #Part.show(btm_box, 'bot'.join(str(theta)))
-    
+        
     # top bevel (mirror by shifting z)
-    top_box = make_bevel_box(theta, height)
+    top_box = make_bevel_box(theta, flat_critical_distance_from_center, height, flat_critical_length)
     result = result.cut(top_box)
-    #Part.show(btm_box, 'top'.join(str(theta)))
 
 # -------------------- RADIAL BLIND HOLES --------------------
 for ang in hole_angles_deg:
@@ -150,7 +122,7 @@ for ang in hole_angles_deg:
     ux = math.cos(a)
     uy = math.sin(a)
     # start point at the nominal outer cylinder surface, at mid-height
-    start = Base.Vector(ux * radius, uy * radius, height / 2.0)
+    start = Base.Vector(ux * hole_rpos, uy * hole_rpos, Tc / 2.0)
     direction = Base.Vector(-ux, -uy, 0)  # toward center
     # Part.makeCylinder accepts a direction vector; height is hole_depth
     hole = Part.makeCylinder(hole_diameter / 2.0, hole_depth, start, direction)
