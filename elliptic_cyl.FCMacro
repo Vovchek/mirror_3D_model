@@ -1,0 +1,25 @@
+import FreeCAD, Part
+from FreeCAD import Base
+
+doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+
+# Parameters
+a = 430   # major radius of ellipse
+b = 320   # minor radius of ellipse
+h = 60   # height of "cylinder"
+
+# Make 2D ellipse
+ellipse = Part.Ellipse(Base.Vector(0,0,0), a, b)   # center at origin
+ellipse_edge = ellipse.toShape()
+wire = Part.Wire([ellipse_edge])
+
+# Make a face from the closed wire
+face = Part.Face(wire)
+
+# Extrude the face along Z to make a solid
+elliptic_cyl = face.extrude(Base.Vector(0,0,h))
+
+# Add to document for viewing
+obj = doc.addObject("Part::Feature", "EllipticCylinder")
+obj.Shape = elliptic_cyl
+doc.recompute()

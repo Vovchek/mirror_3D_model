@@ -1,0 +1,163 @@
+import FreeCAD, Part
+from FreeCAD import Base
+
+doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+
+# Parameters
+Dx = 430   # major radius of ellipse
+Dy = 320   # minor radius of ellipse
+T = 60   # mirror thickness
+D_pocket = 123.3  # diameter of pocket
+h_pocket = 36  # depth of pocket
+chamfer_leg = 4 # length of facet leg
+r_fillet = 2 # radius of fillet at pocket bottom
+# Notches (right-angled dents)
+notch_angles = [0, 90, 180, 270]
+notch_depth = 1.0
+notch_tangential_opening = 2.0 * notch_depth
+
+# Make 2D ellipse
+# Note: major axis first, creation will fail if Dy > Dx
+ellipse = Part.Ellipse(Base.Vector(0,0,0), Dx/2.0, Dy/2.0)   # center at origin
+ellipse_edge = ellipse.toShape()
+wire = Part.Wire([ellipse_edge])
+
+# Make a face from the closed wire
+face = Part.Face(wire)
+
+# Extrude the face along Z to make a solid
+mirror = face.extrude(Base.Vector(0,0,T))
+
+# Find top and bottom edges (ellipses) for chamfering
+edges = []
+for e in mirror.Edges:
+    # Check if the edge is in top or bottom face
+    if abs(e.Vertexes[0].Point.z) < 1e-6 or abs(e.Vertexes[0].Point.z - T) < 1e-6:
+        edges.append(e)
+
+# Apply chamfer: distance1, distance2 = ch for symmetrical 45° chamfer
+mirror = mirror.makeChamfer(chamfer_leg, edges)
+
+# Make pocket
+def robust_fillet(shape, edge_ref, radius, try_alternate=True):
+    """
+    Create a fillet on a shape with comprehensive error handling
+    :param shape: Input shape (Solid or Compound)
+    :param edge_ref: Edge reference (index, tag, or edge object)
+    :param radius: Fillet radius
+    :param try_alternate: Attempt alternate methods if standard fails
+    :return: Filleted shape or initial
+    """
+    doc = App.ActiveDocument
+    
+    # Method 1: Direct shape operation
+    try:
+        if isinstance(edge_ref, int):
+            # Try by index
+            result = shape.makeFillet(radius, [shape.Edges[edge_ref]])
+        elif isinstance(edge_ref, Part.Edge):
+            # Try by edge object
+            result = shape.makeFillet(radius, [edge_ref])
+        else:
+            # Try by tag
+            for edge in shape.Edges:
+                if edge.Tag == edge_ref:
+                    result = shape.makeFillet(radius, [edge])
+                    break
+            else:
+                raise ValueError("Edge not found by tag")
+        
+        if result.isValid() and result.Solids:
+            return result
+    except Exception as e:
+        print(f"Direct fillet failed: {str(e)}")
+    
+    # Method 2: Temporary document objects
+    if try_alternate:
+        try:
+            # Create temporary feature
+            temp_name = "TempFilletShape"
+            if hasattr(doc, temp_name):
+                doc.removeObject(temp_name)
+                
+            temp_feature = doc.addObject("Part::Feature", temp_name)
+            temp_feature.Shape = shape
+            doc.recompute()
+            
+            # Create fillet feature
+            fillet = doc.addObject("Part::Fillet", "TempFillet")
+            fillet.Base = temp_feature
+            
+            # Determine edge specification
+            if isinstance(edge_ref, int):
+                fillet.Edges = [(edge_ref, radius, radius)]
+            else:
+                # Find edge index by geometry
+                for i, edge in enumerate(temp_feature.Shape.Edges):
+                    if edge.isSame(edge_ref):
+                        fillet.Edges = [(i, radius, radius)]
+                        break
+                else:
+                    raise ValueError("Edge not found in temporary shape")
+            
+            doc.recompute()
+            
+            # Validate result
+            if fillet.Shape.isValid() and fillet.Shape.Solids:
+                result = fillet.Shape.copy()
+                
+                # Cleanup
+                doc.removeObject(fillet.Name)
+                doc.removeObject(temp_feature.Name)
+                return result
+        except Exception as e:
+            print(f"Temporary object method failed: {str(e)}")
+            # Cleanup if partially created
+            for obj_name in ["TempFillet", temp_name]:
+                if hasattr(doc, obj_name):
+                    doc.removeObject(obj_name)
+    
+    # Method 3: Manual face-based filleting (advanced)
+    if try_alternate:
+        print("Attempting face-based filleting...")
+        try:
+            # Find faces adjacent to edge
+            edge = edge_ref if isinstance(edge_ref, Part.Edge) else shape.Edges[edge_ref]
+            adjacent_faces = [face for face in shape.Faces if edge in face.Edges]
+            
+            if len(adjacent_faces) >= 2:
+                # Create fillet between faces
+                result = shape.makeFillet(radius, [adjacent_faces[0], adjacent_faces[1]])
+                if result.isValid():
+                    return result
+        except Exception as e:
+            print(f"Face-based filleting failed: {str(e)}")
+    
+    return shape  # All methods failed
+pocket = Part.makeCylinder(D_pocket/2, h_pocket)
+pocket = robust_fillet(pocket, 1, r_fillet)  # Fillet bottom edge
+mirror = mirror.cut(pocket)
+
+# --- Notches (triangular prisms) ---
+import math
+for ang_deg in notch_angles:
+    ang = math.radians(ang_deg)
+    n = Base.Vector(math.cos(ang), math.sin(ang), 0) # radial outward
+    t = Base.Vector(-math.sin(ang), math.cos(ang), 0) # tangential
+
+    # Triangle vertices in global coords (center at origin): H1, H2, V
+    radius = Dx/2.0 if ang_deg in [0, 180] else Dy/2.0
+    half_w = notch_tangential_opening / 2.0
+    H1 = n * radius + t * (-half_w)
+    H2 = n * radius + t * (half_w)
+    V = n * (radius - notch_depth)
+
+    wire = Part.makePolygon([H1, V, H2, H1])
+    face = Part.Face(wire)
+    prism = face.extrude(Base.Vector(0, 0, T))
+    mirror = mirror.cut(prism)
+
+# Add to document for viewing
+obj = doc.addObject("Part::Feature", "Mirror")
+obj.Shape = mirror
+doc.recompute()
