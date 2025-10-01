@@ -137,12 +137,12 @@ for theta in flat_angles_deg:
     # bottom bevel
     btm_box = make_bevel_box(theta, 0)
     result = result.cut(btm_box)
-    #Part.show(btm_box, 'bot'.join(str(theta)))
+    #Part.show(btm_box, 'bot'+str(theta))
     
     # top bevel (mirror by shifting z)
     top_box = make_bevel_box(theta, height)
     result = result.cut(top_box)
-    #Part.show(btm_box, 'top'.join(str(theta)))
+    #Part.show(btm_box, 'top'+str(theta))
 
 # -------------------- RADIAL BLIND HOLES --------------------
 for ang in hole_angles_deg:

@@ -1,0 +1,319 @@
+import FreeCAD, Part, math
+from FreeCAD import Base
+import numpy as np
+from scipy.optimize import root
+
+# Ensure there is an active document
+DOC = FreeCAD.ActiveDocument
+if DOC is None:
+    DOC = FreeCAD.newDocument("MirrorDoc")
+
+show_features = False # show all cut-off features - crown, pockets, notches, etc
+slice_dirZ = FreeCAD.Vector(0, 1, 0) 
+slice_size = 500
+slice_position = FreeCAD.Vector(-slice_size/2.0, 0, -slice_size/2.0)
+
+def z(x, Rc, K):
+    """
+    Function for 2nd order curve (conic surface).
+    """
+    return (x**2) / (Rc * (1 + np.sqrt(1 - (1 + K) * (x**2 / Rc**2))))
+
+def equations(vars, D, ZR, Rc, K):
+    """
+    Equations' system to solve:
+    1. (x1 - x2)**2 + (z(x1) - z(x2))**2 = D**2 (|P1 - P2| = D)
+    2. Distance from vertex to center line orthogonal & centered to (P1,P2) segment
+    Gets:
+        vars - x1, x2 current guess values
+        D - required distance b/w points
+        ZR - required distance to vertex
+        Rc, K - conic surface parameters (radius of curvature and conic constant)
+    returns:
+        [eq1, eq2] - residuals of equations (to be zeroed)
+    """
+    x1, x2 = vars
+    
+    z1 = z(x1, Rc, K)
+    z2 = z(x2, Rc, K)
+    
+    x_center = (x1 + x2) / 2
+    z_center = (z1 + z2) / 2
+    
+    # segment direction (x1,z1 -> x2,z2)
+    dx = x2 - x1
+    dz = z2 - z1
+    
+    nx = -dx  # normal to direction vector
+    nz = dz
+    
+    # distance = |A*0 + B*0 + C| / sqrt(A^2 + B^2)
+    # где A = nx, B = nz, C = -(nx*x_center + nz*z_center)
+    A = nx
+    B = nz  
+    C = -(nx * x_center + nz * z_center)
+    
+    calculated_distance = abs(C) / np.sqrt(A**2 + B**2)
+    
+    # 1st equation: distance between points = D
+    eq1 = (x1 - x2)**2 + (z1 - z2)**2 - D**2
+    
+    # 2nd equation: distance to vertex = ZR
+    eq2 = calculated_distance - ZR
+    
+    return [eq1, eq2]
+
+def solve_ZRVC(D, ZR, Rc, K, method='lm'):
+    """
+    Find x1, x2 aperture limits in the global RF.
+    """
+    # Initial guess
+    initial_guess = [ZR - D/2, ZR + D/2]
+    
+    # Solve the system of equations
+    solution = root(equations, initial_guess, args=(D, ZR, Rc, K), method=method)
+    
+    if solution.success:
+        return solution.x
+    else:
+        print(f"Solution not found. Message: {solution.message}")
+        return None
+
+def equations_center(vars, Rc, K, A, B, C):
+    """
+    Система уравнений:
+    1. z = f(x) уравнение кривой второго порядка
+    2. z = g(x) уравнение оси внеосевой апертуры
+    """
+    xx, zz = vars
+    
+    # Вычисляем вычислим невязку zz - z(x) в точке xx
+    eq1 = zz - z(xx, Rc, K)
+    eq2 = A*xx + B*zz + C  # уравнение прямой    
+    
+    return [eq1, eq2]
+
+def solve_XCZC(D, ZR, Rc, K, method='lm'):
+    """
+    Решение системы уравнений.
+    """
+    x1, x2 = solve_ZRVC(D, ZR, Rc, K, method)
+    z1, z2 = z(x1, Rc, K), z(x2, Rc, K)
+    A = x2 - x1
+    B = z1 - z2
+    C = -(A * (x1 + x2) / 2 + B * (z1 + z2) / 2)
+
+    # Начальное приближение
+    initial_guess = [ZR, z(ZR, Rc, K)]
+    
+    # Решаем систему уравнений
+    solution = root(equations_center, initial_guess, args=(Rc, K, A, B, C), method=method)
+    
+    if solution.success:
+        return solution.x
+    else:
+        print(f"Решение не найдено. Сообщение: {solution.message}\n")
+        return None
+
+# ========== Surface and Part Parameters ==========
+Rc = 1294.2     # Curvature radius [mm]
+K = -0.23455    # Conic constant
+D = 214.0       # Mirror diameter [mm]
+T = 44.33       # Mirror thickness [mm]
+Tc = 40.0		# Mirror center thickness [mm]
+ZRVC = 166.0    # CA to vertex distance [mm]
+
+# Flats both marked 'Critical Zone' (3) and with holes - distances and angles (degrees)
+radius = D / 2.0
+flat_distance_from_center = 105.0
+flat_angles_deg = [30, 90, 150, 210, 270, 330]
+flat_length = 2*(radius**2 - flat_distance_from_center**2)**0.5
+
+# Blind holes (from generatrix towards center)
+hole_diameter = 10.0
+hole_depth = 15.0
+hole_angles_deg = [30, 150, 270]
+hole_rpos = flat_distance_from_center
+
+# Facet (approximation using fillet)
+facet_leg = 1.0
+
+# Notches (right-angled dents)
+notch_angles = [0, 180]
+notch_depth = 1.0
+# ========== Surface and Part Parameters ==========
+
+# NOTE: to make the hypotenuse tangent and the triangle right-angled with the right angle at
+# the inner vertex, the tangential opening (hypotenuse length) must be 2*notch_depth.
+# That yields legs length = sqrt(2)*notch_depth.
+notch_tangential_opening = 2.0 * notch_depth
+
+x1, x2 = solve_ZRVC(D, ZRVC, Rc, K)
+if x1 is None or x2 is None:
+    raise ValueError("Could not solve for aperture limits.")
+
+z1, z2 = z(x1, Rc, K), z(x2, Rc, K)
+#XC = (x1 + x2) / 2  # Aperture center x in the Global Reference Frame (GRF) [mm]  
+#ZC = (z1 + z2) / 2  # Aperture center z in GFF [mm]
+theta = math.atan((z2 - z1) / (x2 - x1))  # tilt angle [rad]
+XC, ZC = solve_XCZC(D, ZRVC, Rc, K)
+if XC is None or ZC is None:
+    raise ValueError("Could not solve for center coordinates.\n")
+
+# ========== Aspheric Surface Creation ==========
+num_points = 500 # Increased resolution
+points = []
+
+for i in range(num_points+1):
+    x = x1 + i*(D/num_points)
+    zz = z(abs(x), Rc, K)
+    points.append(Base.Vector(x, 0, zz))
+
+# Add points for the rear and base to close the profile
+# 1. From last asphere point, down lower then rear face
+points.append(Base.Vector( x2 + (T + z2) * math.tan(theta), 0, -T ))   # Rear bottom right
+points.append(Base.Vector( x1, 0, -T ))  # Rear bottom left
+points.append(points[0])  # Back to start
+
+# Create the wire and face
+wire = Part.makePolygon(points)
+face = Part.Face(wire)
+
+# Test face validity
+if not face.isValid():
+    raise ValueError("Face is not valid. Check the profile points.")
+
+# Now you can revolve safely
+asphere = face.revolve(Base.Vector(0,0,0), Base.Vector(0,0,1), 360)
+
+# ========== Coordinate System Transformation ==========
+R = Base.Rotation(Base.Vector(0,1,0), math.degrees(theta))
+t1 = Base.Vector(-XC, 0, -ZC)
+pl = FreeCAD.Placement(R.multVec(t1), R)
+asphere.Placement = pl
+
+# ========== Lateral and Rear Surfaces Creation ==========
+cylinder = Part.makeCylinder(D/2, 2*T, FreeCAD.Vector(0, 0, -Tc))
+
+# ---------------- Facets (top & bottom) - approximate conical chamfer for curved parts ----------------
+# Top chamfer: create a conical frustum that spans from z=height-facet_leg..height with radii R-facet_leg .. R
+cone_top = Part.makeCone(radius, radius - facet_leg*10, facet_leg*10)
+cutter_top = Part.makeCylinder(radius, facet_leg*10)
+cutter_top = cutter_top.cut(cone_top)
+cutter_top.translate(Base.Vector(0, 0, T - Tc - facet_leg))
+cylinder = cylinder.cut(cutter_top)
+mirror_body = cylinder.common(asphere)
+#Part.show(cylinder, "cyl")
+
+# Bottom chamfer: mirror for bottom
+cutter_bot = cutter_top.mirror(Base.Vector(0, 0, -(Tc - facet_leg)/2), Base.Vector(0, 0, 1))
+#Part.show(cutter_bot, "bevel_bot")
+mirror_body = mirror_body.cut(cutter_bot)
+
+# Function to make a lateraal flat cutter box
+def make_cutter_box(theta_deg, rpos, flat_size):
+    # Box dimensions: wide enough along tangent, deep enough radially
+    box_w = radius - rpos   # tangent length
+    box_d = flat_size       # radial length
+    box_h = T + 10
+    pos = FreeCAD.Vector(rpos, -box_d/2, -Tc)
+    
+    box = Part.makeBox(box_w, box_d, box_h, pos)
+    
+    box.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), theta_deg)
+    return box
+
+# Function to make a bevel cutter box for one flat, bottom or top
+def make_bevel_box(theta_deg, rpos, zpos, flat_length):
+    # Box dimensions: wide enough along tangent, deep enough radially
+    box_w = 40.0   # tangent length
+    box_d = flat_length   # radial length
+    box_h = facet_leg * 2.0
+    
+    if zpos < -Tc/2 :
+        dir = FreeCAD.Vector(1, 0, -1)
+        pos = FreeCAD.Vector(rpos, -box_d/2, zpos + facet_leg)
+    else:
+        dir = FreeCAD.Vector(1, 0, 1)
+        pos = FreeCAD.Vector(rpos - facet_leg, -box_d/2, zpos)
+    box = Part.makeBox(box_w, box_d, box_h, pos, dir)
+    
+    box.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), theta_deg)
+    return box
+
+
+# -------------------- CREATE FLAT CUTS (FIXED: cut the outside) --------------------
+#
+cut_shapes = []
+
+for theta_deg in flat_angles_deg:
+    box = make_cutter_box(theta_deg, flat_distance_from_center, flat_length)
+    cut_shapes.append(box)
+    #Part.show(box, f"flat_{theta_deg}")
+
+# Subtract flats
+for i, shp in enumerate(cut_shapes):
+    try:
+        mirror_body = mirror_body.cut(shp)
+    except Exception as e:
+        FreeCAD.Console.PrintError(f"Failed to subtract flat {i} at shape: {e}")
+
+# --- Cut bevels for all 3 critical flats ---
+high = T - Tc
+for theta in flat_angles_deg:
+    # bottom bevel
+    btm_box = make_bevel_box(theta, flat_distance_from_center, -Tc, flat_length)
+    mirror_body = mirror_body.cut(btm_box)
+        
+    # top bevel (mirror by shifting z)
+    top_box = make_bevel_box(theta, flat_distance_from_center, high, flat_length)
+    mirror_body = mirror_body.cut(top_box)
+
+# -------------------- RADIAL BLIND HOLES --------------------
+for ang in hole_angles_deg:
+    a = math.radians(ang)
+    ux = math.cos(a)
+    uy = math.sin(a)
+    # start point at the nominal outer cylinder surface, at mid-height
+    start = Base.Vector(ux * hole_rpos, uy * hole_rpos, -Tc / 2.0)
+    direction = Base.Vector(-ux, -uy, 0)  # toward center
+    # Part.makeCylinder accepts a direction vector; height is hole_depth
+    hole = Part.makeCylinder(hole_diameter / 2.0, hole_depth, start, direction)
+    try:
+        mirror_body = mirror_body.cut(hole)
+    except Exception as e:
+        FreeCAD.Console.PrintError(f"Failed to subtract hole at {ang} deg: {e}")
+
+# --- Notches (triangular prisms) ---
+for ang_deg in notch_angles:
+    ang = math.radians(ang_deg)
+    n = Base.Vector(math.cos(ang), math.sin(ang), 0) # radial outward
+    t = Base.Vector(-math.sin(ang), math.cos(ang), 0) # tangential
+
+    # Triangle vertices in global coords (center at origin): H1, H2, V
+    half_w = notch_tangential_opening / 2.0
+    H1 = n * radius + t * (-half_w)
+    H2 = n * radius + t * (half_w)
+    V = n * (radius - notch_depth)
+
+    wire = Part.makePolygon([H1, V, H2, H1])
+    face = Part.Face(wire)
+    prism = face.extrude(Base.Vector(0, 0, -T))
+    prism.translate(Base.Vector(0, 0, T-Tc))
+    mirror_body = mirror_body.cut(prism)
+
+# -------------------- FINALIZE PART --------------------
+final_obj = DOC.addObject("Part::Feature", "Mirror")
+final_obj.Shape = mirror_body
+
+# Note: the above cone-based chamfer produces an all-around 45° bevel on the curved surface.
+# For flats: if you need the facets only along flats' top/bottom edges (and not on the curved areas),
+# I can replace the cone-based step with planar chamfers located only at the flat angles — say so and
+# I will update.
+
+
+DOC.recompute()
+FreeCAD.Console.PrintMessage("Puck generation completed — flats now remove outside chips, main body preserved.\n")
+
+# ========== Visualization and Export ==========
+App.ActiveDocument.recompute()

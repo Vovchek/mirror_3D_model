@@ -60,7 +60,7 @@ result = result.cut(cutter_top)
 cutter_bot = cutter_top.mirror(Base.Vector(0, 0, facet_leg/2), Base.Vector(0, 0, 1))
 result = result.cut(cutter_bot)
 
-# Function to make a bevel cutter box for one flat, bottom or top
+# Function to make a lateraal flat cutter box
 def make_cutter_box(theta_deg, rpos, flat_size):
     # Box dimensions: wide enough along tangent, deep enough radially
     box_w = radius - rpos   # tangent length
