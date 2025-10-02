@@ -117,27 +117,28 @@ def solve_XCZC(D, ZR, Rc, K, method='lm'):
         return None
 
 # ========== Surface and Part Parameters ==========
-Code = "C-f40-M13"
-Rc = 1679.3     # Curvature radius [mm]
-K = -0.8031     # Conic constant
-D = 220.0       # Mirror diameter [mm]
-T = 43.46       # Mirror thickness [mm]
+Code = "C-f80-M13"
+Rc = 8093.8     # Curvature radius [mm]
+K = -1.0        # Conic constant
+D = 250.0       # Mirror diameter [mm]
+T = 40.93       # Mirror thickness [mm]
 Tc = 40.0		# Mirror center thickness [mm]
-ZRVC = 152.0    # CA axis to vertex distance [mm]
+ZRVC = 341.5    # CA axis to vertex distance [mm]
 
 print(f"Mirror {Code} Parameters: Rc={Rc}, K={K}, D={D}, T={T}, Tc={Tc}, ZRVC={ZRVC}\n")
 
-# Flats both marked 'Critical Zone' (3) and with holes (3)- distances and angles (degrees)
+# Flats marked (3) - distances and angles (degrees)
 radius = D / 2.0
-flat_distance_from_center = 105.0
-flat_angles_deg = [30, 90, 150, 210, 270, 330]
+flat_distance_from_center = 122.0
+flat_angles_deg = [90, 210, 330]
 flat_length = 2*(radius**2 - flat_distance_from_center**2)**0.5
 
 # Blind holes (from generatrix towards center)
 hole_diameter = 10.0
 hole_depth = 15.0
 hole_angles_deg = [30, 150, 270]
-hole_rpos = flat_distance_from_center
+hole_rpos = radius
+hole_zpos = -Tc + 20.5 # relative to center point on sufrace
 
 # Facet (approximation using fillet)
 facet_leg = 2.0
@@ -302,7 +303,7 @@ for ang in hole_angles_deg:
     ux = math.cos(a)
     uy = math.sin(a)
     # start point at the nominal outer cylinder surface, at mid-height
-    start = Base.Vector(ux * hole_rpos, uy * hole_rpos, -Tc / 2.0)
+    start = Base.Vector(ux * hole_rpos, uy * hole_rpos, hole_zpos)
     direction = Base.Vector(-ux, -uy, 0)  # toward center
     # Part.makeCylinder accepts a direction vector; height is hole_depth
     hole = Part.makeCylinder(hole_diameter / 2.0, hole_depth, start, direction)

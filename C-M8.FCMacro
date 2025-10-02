@@ -4,6 +4,7 @@ from FreeCAD import Base
 doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
 
 # Parameters
+Code = "C-M8"
 Dx = 430   # major radius of ellipse
 Dy = 320   # minor radius of ellipse
 T = 60   # mirror thickness
@@ -158,6 +159,6 @@ for ang_deg in notch_angles:
     mirror = mirror.cut(prism)
 
 # Add to document for viewing
-obj = doc.addObject("Part::Feature", "Mirror")
+obj = doc.addObject("Part::Feature", f"Mirror {Code}")
 obj.Shape = mirror
 doc.recompute()
