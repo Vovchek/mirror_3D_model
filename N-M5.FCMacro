@@ -1,0 +1,772 @@
+import FreeCAD, Part, math
+from FreeCAD import Base
+import numpy as np
+from scipy.optimize import root
+
+show_features = False # show all cut-off features - crown, pockets, notches, etc
+slice_dirZ = FreeCAD.Vector(0, 1, 0) 
+slice_size = 500
+slice_position = FreeCAD.Vector(-slice_size/2.0, 0, -slice_size/2.0)
+
+def z(x, Rc, K):
+    """
+    Function for 2nd order curve (conic surface).
+    """
+    return (x**2) / (Rc * (1 + np.sqrt(1 - (1 + K) * (x**2 / Rc**2))))
+
+def equations(vars, D, ZR, Rc, K):
+    """
+    Equations' system to solve:
+    1. (x1 - x2)**2 + (z(x1) - z(x2))**2 = D**2 (|P1 - P2| = D)
+    2. Distance from vertex to center line orthogonal & centered to (P1,P2) segment
+    Gets:
+        vars - x1, x2 current guess values
+        D - required distance b/w points
+        ZR - required distance to vertex
+        Rc, K - conic surface parameters (radius of curvature and conic constant)
+    returns:
+        [eq1, eq2] - residuals of equations (to be zeroed)
+    """
+    x1, x2 = vars
+    
+    z1 = z(x1, Rc, K)
+    z2 = z(x2, Rc, K)
+    
+    x_center = (x1 + x2) / 2
+    z_center = (z1 + z2) / 2
+    
+    # normal to direction vector
+    nx = x2 - x1  
+    nz = z2 - z1
+    
+    # distance = |A*0 + B*0 + C| / sqrt(A^2 + B^2)
+    # где A = nx, B = nz, C = -(nx*x_center + nz*z_center)
+    A = nx
+    B = nz  
+    C = -(nx * x_center + nz * z_center)
+    
+    calculated_distance = abs(C) / np.sqrt(A**2 + B**2)
+    
+    # 1st equation: distance between points = D
+    eq1 = (x1 - x2)**2 + (z1 - z2)**2 - D**2
+    
+    # 2nd equation: distance to vertex = ZR
+    eq2 = calculated_distance - ZR
+    
+    return [eq1, eq2]
+
+def solve_ZRVC(D, ZR, Rc, K, method='lm'):
+    """
+    Find x1, x2 aperture limits in the global RF.
+    """
+    # Initial guess
+    initial_guess = [ZR - D/2, ZR + D/2]
+    
+    # Solve the system of equations
+    solution = root(equations, initial_guess, args=(D, ZR, Rc, K), method=method)
+    
+    if solution.success:
+        return solution.x
+    else:
+        print(f"Solution not found. Message: {solution.message}")
+        return None
+
+def equations_center(vars, Rc, K, A, B, C):
+    """
+    Система уравнений:
+    1. z = f(x) уравнение кривой второго порядка
+    2. z = g(x) уравнение оси внеосевой апертуры
+    """
+    xx, zz = vars
+    
+    # Вычисляем вычислим невязку zz - z(x) в точке xx
+    eq1 = zz - z(xx, Rc, K)
+    eq2 = A*xx + B*zz + C  # уравнение прямой    
+    
+    return [eq1, eq2]
+
+def solve_XCZC(D, ZR, Rc, K, method='lm'):
+    """
+    Find apeture center point located on surface.
+    """
+    x1, x2 = solve_ZRVC(D, ZR, Rc, K, method)
+    z1, z2 = z(x1, Rc, K), z(x2, Rc, K)
+    
+    x_center = (x1 + x2) / 2
+    z_center = (z1 + z2) / 2
+
+    A = x2 - x1
+    B = z2 - z1
+    C = -(A * x_center + B * z_center)
+
+    # Начальное приближение
+    initial_guess = [ZR, z(ZR, Rc, K)]
+    
+    # Решаем систему уравнений
+    solution = root(equations_center, initial_guess, args=(Rc, K, A, B, C), method=method)
+    
+    if solution.success:
+        return solution.x
+    else:
+        print(f"Решение не найдено. Сообщение: {solution.message}\n")
+        return None
+
+# ========== Surface and Part Parameters ==========
+Code = "N-M5"  # part code for naming
+Rc = 773.44     # Radis of Curvature [mm]
+K = -1.0504     # Conic constant
+D = 276.41      # Mirror diameter [mm]
+ZRVC = 140.0    # Vertex to CA center normal distance [mm]
+T = 62.13       # Mirror thickness [mm]
+Tc = 50.0		# Mirror center thickness [mm]
+
+print(f"Mirror {Code} Parameters: Rc={Rc}, K={K}, D={D}, T={T}, Tc={Tc}, ZRVC={ZRVC}\n")
+
+# asterisk after mm [mm*] in parameter comment means hand-measured value, not reliable
+# Outer lowering
+crown_D = 246.2       # Rear crown diameter [mm*] varies a lot from direct measurements
+crown_h = 53          # Crown height [mm]
+n_flats = 12
+crown_flat_d = 242.41  # Distance between opposite flats [mm]
+
+# ========== Pockets' Parameters ==========
+pocket_thickness = 6    # Material thickness [mm]
+fillet_vertical = 6     # Vertical edge fillet radius [mm]
+fillet_ceiling = 2      # Ceiling edge fillet radius [mm]
+safety_margin = 10      # Extra extrusion margin [mm]
+
+# ========== 3 small triangular Pockets ==========
+s3_edge_length = 62.59     # Equilateral triangle side length [mm*]
+s3_radial_pos = 115.2      # Distance from center to nearest edge [mm] 6 mm from crown edge
+s3_angles = (0, 120, 240)  # 0°, 120°, 240°
+
+# ========== big 3 lateral + 1 center triangular Pockets ==========
+b3_edge_length = 84.87     # Equilateral triangle side length [mm*]
+b3_lat_radial_pos = -30.5      # Distance from center to nearest edge [mm]
+b3_lat_angles = (0, 120, 240)  # 0°, 120°, 240°
+b3c_radial_pos = -24.5    # Distance from center to vertical edge [mm]
+
+# ========== Polygonal pockes (made of eq.lat. 3a, one cornr cut @32 mm to vrtx, rounded by crcl R117.1 @{0,0}) ==========
+p_edge_length = 94.38     # Equilateral triangle side length [mm*]
+p_height = p_edge_length*(0.75**0.5)
+p_pos_x = -24.50    # Distance from center to vertical edge [mm]
+p_pos_y = -52.83    # Distance from center to vertical edge [mm]
+p_cut = -crown_flat_d/2 + pocket_thickness
+p_R = crown_D/2.0 - pocket_thickness
+
+p_p1 = Base.Vector(p_pos_x, p_pos_y, 0)
+p_p2 = Base.Vector(p_pos_x, p_cut, 0)
+p_p3 = Base.Vector((p_R**2 - p_cut**2)**0.5, p_cut)
+p_p5 = Base.Vector(p_pos_x+p_height, p_pos_y-p_edge_length/2.0, 0)
+x = 39.604 # soution of p5.y+k*(x-p5.x) + (R**2-x**2)**0.5 = 0, k = L/(2h) = tan(30)
+y = -(p_R**2-x**2)**0.5
+#print(f"X:{x}, Y:{y}")
+p_p4 = Base.Vector(x, y, 0) 
+
+polygon_points = [
+    (p_p1, 0),
+    (p_p2, 0),
+    (p_p3, -p_R),
+    (p_p4, 0),
+    (p_p5, 0)
+] # [mm*]
+
+# ========== Mounting holes ================
+hole_diameter = 15      # [mm]
+hole_position_x = 55.00 # [mm*]
+
+# lateral througt holes
+D_lat_hole = 7          # [mm]
+T_wall = 6 + 4 # +4 to make sure drill through
+H_lat_hole = -Tc + 36.73
+lat_hole_angles = [150, 60, 300]
+lat_hole_shifts = [FreeCAD.Vector(6, 10.39, 0),
+                   FreeCAD.Vector(10.39, -6, 0),
+                   FreeCAD.Vector(-10.39, -6, 0)]
+
+def mirror_shape_about_plane(shape, angle_deg, plane_point=Base.Vector(0,0,0)):
+    """
+    Mirrors a shape about a plane containing the OZ axis and making angle_deg with OX axis.
+    :param shape: The FreeCAD shape to mirror (e.g., Part.Shape, Part.Solid, etc.)
+    :param angle_deg: Angle (degrees) between OX and the plane (counterclockwise in XOY)
+    :param plane_point: A point on the mirror plane (default: origin)
+    :return: Mirrored shape (new object)
+    """
+    # Compute normal vector for the plane
+    angle_rad = math.radians(angle_deg)
+    # The plane's normal is perpendicular to the plane; for a plane containing OZ and at angle with OX,
+    # the normal is in the XOY plane, at angle + 90° from OX.
+    normal = Base.Vector(math.sin(angle_rad), -math.cos(angle_rad), 0)  # normal in XOY
+    # Mirror the shape
+    mirrored = shape.mirror(plane_point, normal)
+    return mirrored
+
+# ========== Calculate and verify off-axis segment palcement ==========
+x1, x2 = solve_ZRVC(D, ZRVC, Rc, K)
+if x1 is None or x2 is None:
+    raise ValueError("Could not solve for aperture limits.")
+
+z1, z2 = z(x1, Rc, K), z(x2, Rc, K)
+XCL = (x1 + x2) / 2  # Aperture center x in the Global Reference Frame (GRF) [mm]  
+ZCL = (z1 + z2) / 2  # Aperture center z in GFF [mm]
+theta = math.atan((z2 - z1) / (x2 - x1))  # tilt angle [rad]
+XC, ZC = solve_XCZC(D, ZRVC, Rc, K)
+if XC is None or ZC is None:
+    raise ValueError("Could not solve for center coordinates.\n")
+
+print(f"XCL={XCL:.3f}, ZCL={ZCL:.3f}, XC={XC:.3f}, ZC={ZC:.3f}, theta={math.degrees(theta):.3f} deg\n")
+print(f"x1={x1:.3f}, x2={x2:.3f}, z1={z1:.3f}, z2={z2:.3f}")
+x1s, x2s = x1 - XCL, x2 - XCL
+z1s, z2s = z1 - ZCL, z2 - ZCL
+x1ss = x1s * math.cos(-theta) - z1s * math.sin(-theta)
+x2ss = x2s * math.cos(-theta) - z2s * math.sin(-theta)
+print(f"XCL, ZCL rotation validation: x1ss={x1ss:.3f}, x2ss={x2ss:.3f}")
+
+x1s, x2s = x1 - XC, x2 - XC
+z1s, z2s = z1 - ZC, z2 - ZC
+x1ss = x1s * math.cos(-theta) - z1s * math.sin(-theta)
+x2ss = x2s * math.cos(-theta) - z2s * math.sin(-theta)
+print(f"XC, ZC rotation validation: x1ss={x1ss:.3f}, x2ss={x2ss:.3f}")
+
+dx = x2 - x1
+dz = z2 - z1
+dXC = XC - XCL
+dZC = ZC - ZCL
+print(f"Orthogonality checkup: dx*dXC + dz*dZC = {dx*dXC + dz*dZC:.3f} (should be ~0)\n")
+
+Z_bfs = dx*XCL / dz + ZCL  # Best fit sphere center z in GRF
+R_bfs = math.sqrt(x1**2 + (Z_bfs - z1)**2)
+print(f"Radius of best fit sphere = {R_bfs:.3f}\n")
+
+# Build profile points (in OXZ)
+num_points = 500
+points = []
+
+for i in range(num_points+1):
+    x = x1 + i*(D/num_points)
+    zz = z(abs(x), Rc, K)
+    points.append(Base.Vector(x, 0, zz))
+
+# Add points for the rear and base to close the profile
+# 1. From last asphere point, down lower then rear face
+points.append(Base.Vector( x2 + (T + z2) * math.tan(theta), 0, -T ))   # Rear bottom right
+points.append(Base.Vector( x1, 0, -T ))  # Rear bottom left
+points.append(points[0])  # Back to start
+
+# Create the wire and face
+wire = Part.makePolygon(points)
+face = Part.Face(wire)
+
+# Test face validity
+if not face.isValid():
+    raise ValueError("Face is not valid. Check the profile points.")
+
+# Now you can revolve safely
+asphere = face.revolve(Base.Vector(0,0,0), Base.Vector(0,0,1), 360)
+
+# ========== Coordinate System Transformation ==========
+asphere.translate(Base.Vector(-XC, 0, -ZC))
+asphere.rotate(Base.Vector(0, 0, 0), Base.Vector(0, 1, 0), math.degrees(theta))
+
+# ========== Lateral and Rear Surfaces Creation ==========
+cylinder = Part.makeCylinder(D/2, 2*T, FreeCAD.Vector(0, 0, -Tc))
+
+mirror_body = cylinder.common(asphere)
+if show_features:
+    Part.show(mirror_body, "blank")
+
+# Rear face is at z = -Tc (assuming upper face at z=0)
+base_z = -Tc     # Start of the ring at the rear
+ring_height = crown_h
+
+# Create outer cylinder (full diameter)
+outer_cyl = Part.makeCylinder(D/2, ring_height, FreeCAD.Vector(0, 0, base_z))
+# Create inner cylinder (crown diameter)
+inner_cyl = Part.makeCylinder(crown_D/2, ring_height, FreeCAD.Vector(0, 0, base_z))
+
+# The ring to remove is the difference between the two cylinders
+ring_to_remove = outer_cyl.cut(inner_cyl)
+
+# Subtract this ring from the mirror body
+mirror_hat = mirror_body.cut(ring_to_remove)
+
+# Build dodecagon (12-sided polygon) in XOY, centered at (0,0)
+radius = crown_flat_d / (2 * math.cos(math.pi/n_flats))  # Circumradius 
+
+points = []
+for i in range(n_flats):
+    angle = 2 * math.pi * (i + 0.5) / n_flats
+    x = radius * math.cos(angle)
+    y = radius * math.sin(angle)
+    points.append(FreeCAD.Vector(x, y, base_z))
+
+# Close the polygon
+points.append(points[0])
+
+# Make wire and face
+wire = Part.makePolygon(points)
+face = Part.Face(wire)
+
+# Extrude the face to make the crown solid
+crown_poly = face.extrude(FreeCAD.Vector(0, 0, crown_h))
+
+# Make notches
+notch_depth = 1.0   # mm, how deep into the flat
+notch_height = 20.0 # mm, how high along Z
+notch_x = crown_flat_d / 2.0
+
+p0 = Base.Vector(notch_x, -notch_depth, base_z)
+p1 = Base.Vector(notch_x, notch_depth, base_z)
+p2 = Base.Vector(notch_x - notch_depth, 0, base_z)
+
+# Build triangle at base_z
+tri_base = [p0, p1, p2, p0]
+
+# Extrude up along Z
+tri_wire = Part.makePolygon(tri_base)
+tri_face = Part.Face(tri_wire)
+notch_prism = tri_face.extrude(Base.Vector(0, 0, notch_height))
+if show_features:
+    Part.show(notch_prism, "upper_notch")
+
+# Subtract notch from crown_poly (or mirror_hat, as needed)
+crown_poly = crown_poly.cut(notch_prism)
+
+# Oposite notch
+notch_prism = mirror_shape_about_plane(notch_prism, 90)
+if show_features:
+    Part.show(notch_prism, "vertex_notch")
+crown_poly = crown_poly.cut(notch_prism)
+
+# Now make the outer cylinder as before
+outer_cyl = Part.makeCylinder(D/2, crown_h, FreeCAD.Vector(0, 0, base_z))
+
+# The ring to remove is the difference between the outer cylinder and the dodecagon
+ring_to_remove = outer_cyl.cut(crown_poly)
+if show_features:
+    Part.show(ring_to_remove, "crown")
+
+# Subtract this ring from the mirror body
+mirror_hat = mirror_hat.cut(ring_to_remove)
+
+#================================= Pockets ===============================
+def robust_fillet(shape, edge_ref, radius, try_alternate=True):
+    """
+    Create a fillet on a shape with comprehensive error handling
+    :param shape: Input shape (Solid or Compound)
+    :param edge_ref: Edge reference (index, tag, or edge object)
+    :param radius: Fillet radius
+    :param try_alternate: Attempt alternate methods if standard fails
+    :return: Filleted shape or initial
+    """
+    doc = App.ActiveDocument
+    
+    # Method 1: Direct shape operation
+    try:
+        if isinstance(edge_ref, int):
+            # Try by index
+            result = shape.makeFillet(radius, [shape.Edges[edge_ref]])
+        elif isinstance(edge_ref, Part.Edge):
+            # Try by edge object
+            result = shape.makeFillet(radius, [edge_ref])
+        else:
+            # Try by tag
+            for edge in shape.Edges:
+                if edge.Tag == edge_ref:
+                    result = shape.makeFillet(radius, [edge])
+                    break
+            else:
+                raise ValueError("Edge not found by tag")
+        
+        if result.isValid() and result.Solids:
+            return result
+    except Exception as e:
+        print(f"Direct fillet failed: {str(e)}")
+    
+    # Method 2: Temporary document objects
+    if try_alternate:
+        try:
+            # Create temporary feature
+            temp_name = "TempFilletShape"
+            if hasattr(doc, temp_name):
+                doc.removeObject(temp_name)
+                
+            temp_feature = doc.addObject("Part::Feature", temp_name)
+            temp_feature.Shape = shape
+            doc.recompute()
+            
+            # Create fillet feature
+            fillet = doc.addObject("Part::Fillet", "TempFillet")
+            fillet.Base = temp_feature
+            
+            # Determine edge specification
+            if isinstance(edge_ref, int):
+                fillet.Edges = [(edge_ref, radius, radius)]
+            else:
+                # Find edge index by geometry
+                for i, edge in enumerate(temp_feature.Shape.Edges):
+                    if edge.isSame(edge_ref):
+                        fillet.Edges = [(i, radius, radius)]
+                        break
+                else:
+                    raise ValueError("Edge not found in temporary shape")
+            
+            doc.recompute()
+            
+            # Validate result
+            if fillet.Shape.isValid() and fillet.Shape.Solids:
+                result = fillet.Shape.copy()
+                
+                # Cleanup
+                doc.removeObject(fillet.Name)
+                doc.removeObject(temp_feature.Name)
+                return result
+        except Exception as e:
+            print(f"Temporary object method failed: {str(e)}")
+            # Cleanup if partially created
+            for obj_name in ["TempFillet", temp_name]:
+                if hasattr(doc, obj_name):
+                    doc.removeObject(obj_name)
+    
+    # Method 3: Manual face-based filleting (advanced)
+    if try_alternate:
+        print("Attempting face-based filleting...")
+        try:
+            # Find faces adjacent to edge
+            edge = edge_ref if isinstance(edge_ref, Part.Edge) else shape.Edges[edge_ref]
+            adjacent_faces = [face for face in shape.Faces if edge in face.Edges]
+            
+            if len(adjacent_faces) >= 2:
+                # Create fillet between faces
+                result = shape.makeFillet(radius, [adjacent_faces[0], adjacent_faces[1]])
+                if result.isValid():
+                    return result
+        except Exception as e:
+            print(f"Face-based filleting failed: {str(e)}")
+    
+    return shape  # All methods failed
+
+# ========== Create Pocket Template ==========
+
+def create_triangular_prism(edge_length, side_center, direction, height, safety_margin=10, fillet_radius=6):
+    import FreeCAD, Part, math
+    from FreeCAD import Base
+
+    # Calculate triangle vertices
+    # 1. Find endpoints of the base side
+    perp = direction.cross(Base.Vector(0,0,1))  # Perpendicular in XOY
+    perp.normalize()
+    half_side = edge_length / 2
+    p1 = side_center + perp * half_side
+    p2 = side_center - perp * half_side
+
+    # 2. Find the opposite vertex
+    # The centroid divides the median in a 2:1 ratio from vertex to side
+    # For equilateral, distance from side to opposite vertex: h = edge_length * sqrt(3)/2
+    h = edge_length * math.sqrt(3) / 2
+    p3 = side_center + direction * h
+
+    # 3. Place all points at the same Z (use safety_margin above mirror, extrude downward)
+    z0 = safety_margin
+    p1 = Base.Vector(p1.x, p1.y, z0)
+    p2 = Base.Vector(p2.x, p2.y, z0)
+    p3 = Base.Vector(p3.x, p3.y, z0)
+
+    # Create wire and face
+    wire = Part.makePolygon([p1, p2, p3, p1])
+    face = Part.Face(wire)
+
+    # Extrude downward
+    prism = face.extrude(Base.Vector(0, 0, -height))
+
+    # Fillet vertical edges
+    vertical_edges = []
+    for edge in prism.Edges:
+        v1, v2 = edge.Vertexes
+        if abs(v1.Point.x - v2.Point.x) < 1e-6 and abs(v1.Point.y - v2.Point.y) < 1e-6:
+            vertical_edges.append(edge)
+        elif abs(edge.tangentAt(0).z) > 0.99:
+            vertical_edges.append(edge)
+    if vertical_edges:
+        prism = prism.makeFillet(fillet_radius, vertical_edges)
+
+    return prism
+
+# ========== Create Spherical Ceiling ==========
+def create_ceiling_sphere(R_bfs, pocket_thickness):
+    R_ceiling = R_bfs + pocket_thickness
+    sphere = Part.makeSphere(R_ceiling, Base.Vector(0,0,R_bfs), Base.Vector(0,0,1), -90, -60, 360)
+    return sphere
+
+ceiling = create_ceiling_sphere(R_bfs, pocket_thickness)
+
+# ========== Main Pocket Creation ==========
+def create_pocket(edge_length, side_center, direction, height, ceiling, fillet_vertical=6, fillet_ceiling=2):
+    prism = create_triangular_prism(edge_length, side_center, direction, height, fillet_radius=fillet_vertical)
+    pocket = prism.cut(ceiling)
+    pocket = robust_fillet(pocket, 1, fillet_ceiling)
+    return pocket
+
+def angle_between(v1, v2):
+    if v1.Length == 0 or v2.Length == 0:
+        print("Warning: Zero-length vector in angle calculation.")
+        return 0
+    dot = v1.normalize().dot(v2.normalize())
+    dot = max(min(dot, 1.0), -1.0)
+    return math.degrees(math.acos(dot))
+
+def remove_consecutive_duplicates(points):
+    """Remove consecutive duplicate points with curvature support"""
+    new_points = []
+    for point_data in points:
+        point, curvature = point_data
+        if not new_points or (point - new_points[-1][0]).Length > 1e-6:
+            new_points.append((point, curvature))
+    return new_points
+
+def create_polygonal_prism(points, height, safety_margin=10, fillet_radius=6):
+    """
+    Create a polygonal prism with arc segments
+    :param points: List of tuples (Base.Vector, curvature)
+                   curvature = 0 for straight segments, >0 for arc radius
+    :param height: Height of the prism
+    :param safety_margin: Z-offset for the base
+    :param fillet_radius: Fillet radius for vertical edges
+    :return: Part.Shape
+    """
+    # Process points and remove duplicates
+    points = remove_consecutive_duplicates(points)
+    
+    # Raise all points to the same Z (safety_margin above surface)
+    base_points = [(Base.Vector(p.x, p.y, safety_margin), c) for p, c in points]
+    
+    # Close the polygon if not closed
+    if len(base_points) > 0 and (base_points[0][0] - base_points[-1][0]).Length > 1e-6:
+        base_points.append(base_points[0])
+    
+    # Create edges with arcs where curvature > 0
+    edges = []
+    n = len(base_points)
+    for i in range(n - 1):
+        start, start_curvature = base_points[i]
+        end, end_curvature = base_points[i + 1]
+        
+        # Use curvature from the starting point
+        curvature = start_curvature
+        
+        if abs(curvature) < 1e-6:  # Straight segment
+            edges.append(Part.LineSegment(start, end).toShape())
+        else:  # Arc segment
+            chord_vec = end - start
+            chord_length = chord_vec.Length
+            
+            # Validate curvature radius
+            if abs(curvature) < chord_length / 2:
+                print(f"Warning: Curvature radius {curvature} too small for chord length {chord_length:.2f}")
+                edges.append(Part.LineSegment(start, end).toShape())
+                continue
+                
+            # Calculate perpendicular direction
+            chord_dir = chord_vec.normalize()
+            perp = chord_dir.cross(Base.Vector(0, 0, 1))
+            perp.normalize()
+            
+            # Calculate center and midpoint for arc
+            mid = (start + end) * 0.5
+            d = math.sqrt(curvature**2 - (chord_length/2)**2)
+            
+            # Determine bulge direction based on curvature sign
+            sign = 1.0 if curvature > 0 else -1.0
+            center = mid + perp * d * sign
+            
+            # Create arc through three points
+            try:
+                # Get vectors from center to start and end
+                v1 = start - center
+                v2 = end - center
+                v1.normalize()
+                v2.normalize()
+                
+                # Calculate arc midpoint
+                arc_mid_dir = (v1 + v2).normalize()
+                arc_mid = center + arc_mid_dir * abs(curvature)
+                
+                # Create the arc
+                arc = Part.Arc(start, arc_mid, end)
+                edges.append(arc.toShape())
+            except Exception as e:
+                print(f"Arc creation failed: {str(e)}")
+                edges.append(Part.LineSegment(start, end).toShape())
+    
+    # Create wire and face
+    wire = Part.Wire(edges)
+    face = Part.Face(wire)
+    
+    # Extrude downward to create prism
+    prism = face.extrude(Base.Vector(0, 0, -height))
+
+    # Fillet vertical edges (same as before)
+    if fillet_radius > 0:
+        vertical_edges = []
+        for edge in prism.Edges:
+            v1, v2 = edge.Vertexes
+            if (abs(v1.Point.x - v2.Point.x) < 1e-6 and
+                abs(v1.Point.y - v2.Point.y) < 1e-6 and
+                abs(v1.Point.z - v2.Point.z) > 1e-6):
+                vertical_edges.append(edge)
+        
+        if vertical_edges:
+            try:
+                prism = prism.makeFillet(fillet_radius, vertical_edges)
+            except Exception as e:
+                print(f"Vertical fillet failed: {str(e)}")
+    
+    return prism
+
+def create_polygonal_pocket(points, height, ceiling, safety_margin=10, fillet_radius=6, fillet_ceiling=2):
+    prism = create_polygonal_prism(points, height, safety_margin, fillet_radius)
+    pocket = prism.cut(ceiling)
+    pocket = robust_fillet(pocket, 1, fillet_ceiling)
+    return pocket
+
+final_mirror = mirror_hat
+
+# ========== Create 3 small triangular Pockets ==========
+#show_features = True
+pocket = create_pocket(s3_edge_length, Base.Vector(s3_radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+if show_features:
+    Part.show(pocket, "small_3a_pocket_0")
+else:
+    final_mirror = final_mirror.cut(pocket)
+
+pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+    Part.show(pocket, "small_3a_pocket_120")
+else:
+    final_mirror = final_mirror.cut(pocket)
+
+pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+    Part.show(pocket, "small_3a_pocket_240")
+else:
+    final_mirror = final_mirror.cut(pocket)
+show_features = False
+
+# ========== Create 3 bigger triangular Pockets ==========
+pocket = create_pocket(b3_edge_length, Base.Vector(b3_lat_radial_pos, 0, 0), Base.Vector(-1, 0, 0), Tc+2*safety_margin, ceiling)
+if show_features:
+    Part.show(pocket, "big_3a_pocket_0")
+final_mirror = final_mirror.cut(pocket)
+
+pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+    Part.show(pocket, "big_3a_pocket_120")
+final_mirror = final_mirror.cut(pocket)
+
+pocket.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+    Part.show(pocket, "big_3a_pocket_240")
+final_mirror = final_mirror.cut(pocket)
+
+# ========== Create 1 center triangular Pocket ==========
+pocket = create_pocket(b3_edge_length, Base.Vector(b3c_radial_pos, 0, 0), Base.Vector(1, 0, 0), Tc+2*safety_margin, ceiling)
+if show_features:
+    Part.show(pocket, "big_3a_pocket_center")
+final_mirror = final_mirror.cut(pocket)
+
+# ========== Create Polygonal Pockets ==========
+height = Tc + 2*safety_margin  # Use your mirror thickness and margin
+# Assume 'ceiling' is already defined (e.g., a sphere as before)
+pocket = create_polygonal_pocket(polygon_points, height, ceiling)
+if show_features:
+    Part.show(pocket, "poly_pocket_1")
+final_mirror = final_mirror.cut(pocket)
+
+pocket = mirror_shape_about_plane(pocket, -60)
+if show_features:
+    Part.show(pocket, "poly_pocket_2")
+final_mirror = final_mirror.cut(pocket)
+
+pocket = mirror_shape_about_plane(pocket, 0)
+if show_features:
+    Part.show(pocket, "poly_pocket_3")
+final_mirror = final_mirror.cut(pocket)
+
+pocket = mirror_shape_about_plane(pocket, 60)
+if show_features:
+    Part.show(pocket, "poly_pocket_4")
+final_mirror = final_mirror.cut(pocket)
+
+pocket = mirror_shape_about_plane(pocket, 120)
+if show_features:
+    Part.show(pocket, "poly_pocket_5")
+final_mirror = final_mirror.cut(pocket)
+
+pocket = mirror_shape_about_plane(pocket, 0)
+if show_features:
+    Part.show(pocket, "poly_pocket_6")
+final_mirror = final_mirror.cut(pocket)
+
+# Create cylindrical pocket (extruded circle)
+# Place pocket top at safety margin above mirror surface (Z= safety_margin)
+pocket_top_z = safety_margin
+depth = Tc + 2 * safety_margin
+pocket_base_z = pocket_top_z - depth
+
+hole = Part.makeCylinder(hole_diameter/2.0, depth, Base.Vector(hole_position_x, 0, pocket_base_z))
+hole = hole.cut(ceiling)
+hole = robust_fillet(hole, 1, fillet_ceiling)
+
+if show_features:
+    Part.show(hole, "hole_0")
+final_mirror = final_mirror.cut(hole)
+
+hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+    Part.show(hole, "hole_120")
+final_mirror = final_mirror.cut(hole)
+
+hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), 120)
+if show_features:
+    Part.show(hole, "hole_240")
+final_mirror = final_mirror.cut(hole)
+
+# ========== Drill lateral holes ===========
+for i in range(3):
+    hole = Part.makeCylinder(D_lat_hole/2.0, T_wall, Base.Vector(crown_flat_d/2.0 + 1, 0, H_lat_hole), Base.Vector(-1, 0, 0))
+    hole.rotate(Base.Vector(0,0,0), Base.Vector(0,0,1), lat_hole_angles[i])
+    hole.translate(lat_hole_shifts[i])
+    if show_features:
+        Part.show(hole, f"lat_hole_{lat_hole_angles[i]}")
+    final_mirror = final_mirror.cut(hole)
+
+# ========== Finalize and Display ==========
+
+Part.show(final_mirror, f"SiC_Mirror_{Code}")
+
+#================================= Section to check geometry ===============================
+def create_section(body, slice_size, slice_position, slice_dirZ):
+    if slice_size <= 0:
+        return None
+    # If mirror_body is a Compound, extract its solids
+    solids = [s for s in body.Solids]
+
+# Create the XOZ plane as before
+    slice_plane = Part.makePlane(slice_size, slice_size, slice_position, slice_dirZ)
+
+# Section each solid in the compound
+    sections = []
+    for solid in solids:
+        section = solid.section(slice_plane)
+        if not section.isNull():
+            sections.append(section)
+
+    if sections:  # Only if the list is not empty
+        compound_section = Part.Compound(sections)
+        return compound_section
+    
+section = create_section(final_mirror, slice_size, slice_position, slice_dirZ)
+if not (section is None):
+    Part.show(section, "section")
+
+App.ActiveDocument.recompute()
