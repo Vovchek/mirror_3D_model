@@ -331,7 +331,7 @@ for ang_deg in notch_angles:
     mirror_body = mirror_body.cut(prism)
 
 # -------------------- FINALIZE PART --------------------
-final_obj = DOC.addObject("Part::Feature", "Mirror")
+final_obj = DOC.addObject("Part::Feature", f"Mirror_{Code}")
 final_obj.Shape = mirror_body
 
 # Note: the above cone-based chamfer produces an all-around 45° bevel on the curved surface.

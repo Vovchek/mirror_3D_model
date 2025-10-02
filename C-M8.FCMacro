@@ -159,6 +159,6 @@ for ang_deg in notch_angles:
     mirror = mirror.cut(prism)
 
 # Add to document for viewing
-obj = doc.addObject("Part::Feature", f"Mirror {Code}")
+obj = doc.addObject("Part::Feature", f"Mirror_{Code}")
 obj.Shape = mirror
 doc.recompute()

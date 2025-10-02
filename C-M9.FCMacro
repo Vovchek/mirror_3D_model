@@ -16,6 +16,7 @@ if DOC is None:
     DOC = FreeCAD.newDocument("PuckDoc")
 
 # -------------------- PARAMETERS (edit these as needed) --------------------
+Code = "C-M9"  # part code for naming
 outer_diameter = 430.0
 radius = outer_diameter / 2.0
 height = 60.99
@@ -167,7 +168,7 @@ for ang_deg in notch_angles:
     result = result.cut(prism)
 
 # -------------------- FINALIZE PART --------------------
-final_obj = DOC.addObject("Part::Feature", "Puck")
+final_obj = DOC.addObject("Part::Feature", f"Mirror_{Code}")
 final_obj.Shape = result
 
 # Note: the above cone-based chamfer produces an all-around 45° bevel on the curved surface.
