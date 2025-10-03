@@ -1,0 +1,23 @@
+import FreeCAD, Part
+
+doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+
+# --- assume you already built your final solid as a Part.Shape ---
+# for demo I’ll just use a cylinder:
+shape = Part.makeCylinder(151.5, 50)   # radius 151.5 mm, height 50 mm
+
+# --- 1. Create a Feature to hold the Shape ---
+feat = doc.addObject("Part::Feature", "PuckFeature")
+feat.Shape = shape
+
+# --- 2. Create a PartDesign Body ---
+body = doc.addObject("PartDesign::Body", "PuckBody")
+
+# --- 3. Reparent the feature as BaseFeature of the Body ---
+body.BaseFeature = feat
+
+# --- 4. Recompute ---
+doc.recompute()
+
+# --- (optional) activate body for immediate GUI editing ---
+doc.getObject("PuckBody").ViewObject.Document.setEdit(body)

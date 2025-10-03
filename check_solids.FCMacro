@@ -1,0 +1,46 @@
+import FreeCAD as App
+import Part
+
+def check_solid(obj):
+    shape = obj.Shape
+
+    print("=== Solid Check for:", obj.Name, "===")
+
+    # 1. Validity
+    if shape.isValid():
+        print("✔ Shape is valid")
+    else:
+        print("❌ Shape is NOT valid (check geometry!)")
+
+    # 2. Solids
+    if shape.Solids:
+        print(f"✔ Contains {len(shape.Solids)} solid(s)")
+    else:
+        print("❌ No solids detected (probably only shells or faces)")
+
+    # 3. Closed check
+    if shape.isClosed():
+        print("✔ Shape is closed")
+    else:
+        print("❌ Shape is NOT closed (open shells present)")
+
+    # 4. Volume and Area
+    try:
+        print("Volume:       ", shape.Volume, "mm³")
+        print("Surface Area: ", shape.Area,   "mm²")
+    except Exception as e:
+        print("⚠ Could not compute volume/area:", e)
+
+    # 5. CAM warnings
+    if not shape.Solids:
+        print("⚠ CAM may fail — need watertight solid!")
+    if shape.Volume == 0:
+        print("⚠ Zero volume (this is a shell, not a body)")
+
+    print("========================================\n")
+
+# Example usage: run this for selected objects in GUI
+doc = App.ActiveDocument
+for obj in doc.Objects:
+    if hasattr(obj, "Shape"):
+        check_solid(obj)

@@ -3,6 +3,8 @@ from FreeCAD import Base
 import numpy as np
 from scipy.optimize import root
 
+doc = FreeCAD.ActiveDocument or FreeCAD.newDocument()
+
 show_features = False # show all cut-off features - crown, pockets, notches, etc
 slice_dirZ = FreeCAD.Vector(0, 1, 0) 
 slice_size = 500
@@ -740,9 +742,6 @@ for i in range(3):
         Part.show(hole, f"lat_hole_{lat_hole_angles[i]}")
     final_mirror = final_mirror.cut(hole)
 
-# ========== Finalize and Display ==========
-
-Part.show(final_mirror, f"SiC_Mirror_{Code}")
 
 #================================= Section to check geometry ===============================
 def create_section(body, slice_size, slice_position, slice_dirZ):
@@ -769,4 +768,20 @@ section = create_section(final_mirror, slice_size, slice_position, slice_dirZ)
 if not (section is None):
     Part.show(section, "section")
 
+# ========== Finalize and Display ==========
+
+feat = doc.addObject("Part::Feature", f"SiC_Mirror_{Code}")
+feat.Shape = final_mirror
+
+# --- 2. Create a PartDesign Body ---
+body = doc.addObject("PartDesign::Body", "MirrorBody")
+
+# --- 3. Reparent the feature as BaseFeature of the Body ---
+body.BaseFeature = feat
+
+# --- 4. Recompute ---
+doc.recompute()
+
+# --- (optional) activate body for immediate GUI editing ---
+doc.getObject("MirrorBody").ViewObject.Document.setEdit(body)
 App.ActiveDocument.recompute()

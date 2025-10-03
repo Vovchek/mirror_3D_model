@@ -1,0 +1,49 @@
+import FreeCAD as App
+import Part
+
+def is_good_solid(shape):
+    """Check if shape is a valid watertight solid."""
+    return (
+        shape.isValid() and
+        shape.isClosed() and
+        bool(shape.Solids) and
+        abs(shape.Volume) > 1e-6  # avoid zero-volume
+    )
+
+def export_valid_solids(doc, export_path):
+    good_objs = []
+    bad_objs = []
+
+    for obj in doc.Objects:
+        if not hasattr(obj, "Shape"):
+            continue
+
+        shape = obj.Shape
+        if is_good_solid(shape):
+            print(f"✔ {obj.Name} is a valid solid ({shape.Volume:.2f} mm³)")
+            good_objs.append(obj)
+        else:
+            print(f"❌ {obj.Name} is NOT valid for CAM export")
+            bad_objs.append(obj)
+
+    if good_objs:
+        print(f"\nExporting {len(good_objs)} solids to {export_path}")
+        Part.export(good_objs, export_path)
+    else:
+        print("\n⚠ No valid solids to export!")
+
+    if bad_objs:
+        print("\n⚠ Skipped objects (not solid):")
+        for obj in bad_objs:
+            print("  -", obj.Name)
+
+
+# === Example usage ===
+doc = App.ActiveDocument
+if doc is None:
+    raise RuntimeError("No active document")
+
+# Change this path as needed
+export_file = "~/Desktop/export.step"
+
+export_valid_solids(doc, export_file)
